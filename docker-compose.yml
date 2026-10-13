@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16   # postgres 16 + pgvector extension
+    container_name: devscout_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: devscout
+      POSTGRES_USER: devscout
+      POSTGRES_PASSWORD: devscout_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docs/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devscout -d devscout"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+    driver: local
