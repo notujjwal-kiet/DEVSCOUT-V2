@@ -62,34 +62,56 @@ def count_real_lines(code: str, language: str = "python") -> int:
     return real_lines
 
 
-def check_syntax(code: str, language: str = "python") -> tuple[bool, str | None]:
+STRUCTURAL_AST_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.If,
+)
+
+
+def has_structural_substance(tree: ast.AST) -> bool:
+    """
+    Check if Python AST contains structural logic (function, class, loop, or conditional).
+    Rejects code that only consists of literal assignments or expressions.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, STRUCTURAL_AST_NODES):
+            return True
+    return False
+
+
+def check_syntax(code: str, language: str = "python") -> tuple[bool, str | None, ast.AST | None]:
     """
     Check code syntax.
-    Python checked via ast.
+    Python checked via ast (returning parsed tree on success).
     JS/TS checked only if an external parser (e.g. esprima) is available; otherwise skipped.
     """
     lang = language.lower().strip()
     if lang in ("python", "py"):
         try:
-            ast.parse(code)
-            return True, None
+            tree = ast.parse(code)
+            return True, None, tree
         except SyntaxError as exc:
-            return False, f"Python SyntaxError at line {exc.lineno}: {exc.msg}"
+            return False, f"Python SyntaxError at line {exc.lineno}: {exc.msg}", None
 
     if lang in ("javascript", "js", "typescript", "ts"):
         try:
             import esprima  # type: ignore
 
             esprima.parseScript(code)
-            return True, None
+            return True, None, None
         except ImportError:
             # Parser not available in current environment; skip syntax check
-            return True, None
+            return True, None, None
         except Exception as exc:
-            return False, f"JS/TS SyntaxError: {exc}"
+            return False, f"JS/TS SyntaxError: {exc}", None
 
     # Unsupported language for syntax checking: skip check
-    return True, None
+    return True, None, None
 
 
 def review_attempt(
@@ -104,7 +126,8 @@ def review_attempt(
     Status outcomes:
     - COPIED_SNIPPET: Attempt matches a previously provided snippet hash.
     - INVALID: Code fails syntax parsing.
-    - TRIVIAL: Attempt has fewer than min_real_lines (excluding blanks and comments).
+    - TRIVIAL: Attempt has fewer than min_real_lines (excluding blanks and comments)
+               or lacks structural substance (e.g., only literal assignments).
     - ACCEPTABLE: Substantive, syntactically valid original attempt.
     """
     if not code or not code.strip():
@@ -123,7 +146,7 @@ def review_attempt(
         )
 
     # 2. Syntax validation
-    is_valid_syntax, syntax_error = check_syntax(code, language=language)
+    is_valid_syntax, syntax_error, parsed_ast = check_syntax(code, language=language)
     if not is_valid_syntax:
         return AttemptReview(
             status=AttemptStatus.INVALID,
@@ -141,10 +164,22 @@ def review_attempt(
             ],
         )
 
-    # 4. Acceptable attempt
+    # 4. Structural substance check for Python
+    lang = language.lower().strip()
+    if lang in ("python", "py") and parsed_ast is not None:
+        if not has_structural_substance(parsed_ast):
+            return AttemptReview(
+                status=AttemptStatus.TRIVIAL,
+                reasons=[
+                    "Attempt lacks structural substance: must include at least one function, "
+                    "class, loop (for/while), or conditional (if), not just assignments of literals."
+                ],
+            )
+
+    # 5. Acceptable attempt
     return AttemptReview(
         status=AttemptStatus.ACCEPTABLE,
         reasons=[
-            f"Attempt contains {real_lines} real code lines with valid syntax and no snippet copying detected."
+            f"Attempt contains {real_lines} real code lines with valid syntax, structural logic, and no snippet copying detected."
         ],
     )

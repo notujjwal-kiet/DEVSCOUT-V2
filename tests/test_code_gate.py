@@ -317,3 +317,31 @@ print("only one real line")
     assert count_real_lines(comment_padded_code) == 1
     review = review_attempt(comment_padded_code, min_real_lines=10)
     assert review.status == AttemptStatus.TRIVIAL
+
+
+def test_ten_lines_of_literal_assignments_is_trivial():
+    """10 lines of literal assignments (xN = N) without structural substance must return TRIVIAL."""
+    code = "\n".join([f"x{i} = {i}" for i in range(10)])
+    review = review_attempt(code, min_real_lines=10)
+    assert review.status == AttemptStatus.TRIVIAL
+    assert any("structural substance" in r for r in review.reasons)
+
+
+def test_real_function_with_logic_is_acceptable():
+    """A real function with logic (FunctionDef, loop, conditional) >= 10 lines returns ACCEPTABLE."""
+    code = """
+def process_scores(scores: list[int]) -> dict[str, int]:
+    total = 0
+    passing_count = 0
+    for score in scores:
+        if score >= 50:
+            passing_count += 1
+            total += score
+        else:
+            total += 0
+    average = total // max(len(scores), 1)
+    return {"total": total, "passing": passing_count, "avg": average}
+"""
+    review = review_attempt(code, min_real_lines=10)
+    assert review.status == AttemptStatus.ACCEPTABLE
+
