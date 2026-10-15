@@ -1,6 +1,8 @@
 import json
+from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
+from google.genai import errors
 from pydantic import BaseModel, ValidationError
 
 from app.llm.provider import (
@@ -170,40 +172,146 @@ async def test_ollama_generate_structured_invalid_json():
 
 
 @pytest.mark.asyncio
-async def test_gemini_provider_stub(monkeypatch):
-    """GeminiProvider adheres to LLMProvider protocol when GEMINI_MODEL is set."""
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+async def test_gemini_generate_success():
+    """generate requests plain text from Gemini client and returns text."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock(text="Gemini plain text explanation.")
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
 
-    provider = GeminiProvider()
-    assert isinstance(provider, LLMProvider)
-    assert provider.model_name == "gemini-1.5-flash"
-    assert provider.api_key == "test-api-key"
-
-    text = await provider.generate("Explain Python protocols")
-    assert "[Gemini:gemini-1.5-flash]" in text
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    result = await provider.generate(
+        prompt="Explain rate limiting",
+        system_prompt="Be concise",
+    )
+    assert result == "Gemini plain text explanation."
+    mock_client.aio.models.generate_content.assert_awaited_once()
+    kwargs = mock_client.aio.models.generate_content.await_args.kwargs
+    assert kwargs["model"] == "gemini-test"
+    assert kwargs["contents"] == "Explain rate limiting"
+    assert kwargs["config"].system_instruction == "Be concise"
 
 
 @pytest.mark.asyncio
-async def test_gemini_generate_structured_raises_not_implemented(monkeypatch):
-    """generate_structured must raise NotImplementedError on GeminiProvider."""
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
-    provider = GeminiProvider()
-    with pytest.raises(NotImplementedError, match="stub: real LLM call not implemented yet"):
-        await provider.generate_structured("prompt", DummySchema)
+async def test_gemini_generate_structured_success():
+    """generate_structured requests JSON output with schema and validates with model_validate_json."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock(text='{"message": "Valid structured JSON", "confidence": 0.98}')
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    result = await provider.generate_structured(
+        prompt="Generate structured summary",
+        schema=DummySchema,
+        system_prompt="Return JSON",
+    )
+    assert isinstance(result, DummySchema)
+    assert result.message == "Valid structured JSON"
+    assert result.confidence == 0.98
+
+    kwargs = mock_client.aio.models.generate_content.await_args.kwargs
+    assert kwargs["model"] == "gemini-test"
+    assert kwargs["contents"] == "Generate structured summary"
+    assert kwargs["config"].response_mime_type == "application/json"
+    assert kwargs["config"].response_schema == DummySchema
+    assert kwargs["config"].system_instruction == "Return JSON"
+
+
+@pytest.mark.asyncio
+async def test_gemini_generate_structured_invalid_json():
+    """If Gemini returns invalid JSON content, schema.model_validate_json raises ValidationError."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock(text="Non-JSON raw text")
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    with pytest.raises(ValidationError):
+        await provider.generate_structured(
+            prompt="Generate structured summary",
+            schema=DummySchema,
+        )
 
 
 def test_gemini_missing_model_raises_clear_error(monkeypatch):
-    """GeminiProvider raises clear error instructing to set GEMINI_MODEL in .env if missing."""
+    """GeminiProvider raises clear LLMProviderError if GEMINI_MODEL is missing."""
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    with pytest.raises(ValueError, match="GEMINI_MODEL is not set. Please configure GEMINI_MODEL in .env."):
-        GeminiProvider(model_name=None)
+    with pytest.raises(LLMProviderError, match="GEMINI_MODEL is not set. Please configure GEMINI_MODEL in .env."):
+        GeminiProvider(model_name=None, api_key="test-key")
+
+
+def test_gemini_missing_api_key_raises_clear_error(monkeypatch):
+    """GeminiProvider raises clear LLMProviderError if GEMINI_API_KEY is missing."""
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(LLMProviderError, match="GEMINI_API_KEY is not set. Please configure GEMINI_API_KEY in .env."):
+        GeminiProvider(model_name="gemini-test", api_key=None)
+
+
+@pytest.mark.asyncio
+async def test_gemini_rate_limit_error_mapping():
+    """SDK 429 rate limit errors map to LLMProviderError with a readable message."""
+    mock_client = MagicMock()
+    api_err = errors.APIError(429, {"error": {"message": "Quota depleted", "status": "RESOURCE_EXHAUSTED"}})
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=api_err)
+
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    with pytest.raises(LLMProviderError, match="rate limit exceeded"):
+        await provider.generate("prompt")
+
+
+@pytest.mark.asyncio
+async def test_gemini_auth_error_mapping():
+    """SDK 401/403 auth errors map to LLMProviderError with a readable message."""
+    mock_client = MagicMock()
+    api_err = errors.APIError(403, {"error": {"message": "Invalid API key", "status": "PERMISSION_DENIED"}})
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=api_err)
+
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    with pytest.raises(LLMProviderError, match="authentication failed"):
+        await provider.generate("prompt")
+
+
+@pytest.mark.asyncio
+async def test_gemini_network_error_mapping():
+    """SDK network/connection errors map to LLMProviderError with a readable message."""
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=httpx.ConnectError("Failed to connect to Gemini endpoint")
+    )
+
+    provider = GeminiProvider(
+        model_name="gemini-test",
+        api_key="test-api-key",
+        client=mock_client,
+    )
+    with pytest.raises(LLMProviderError, match="network error"):
+        await provider.generate("prompt")
 
 
 def test_get_llm_provider_env_selection(monkeypatch):
     """get_llm_provider selects provider based on LLM_PROVIDER env var."""
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
     provider = get_llm_provider()
     assert isinstance(provider, GeminiProvider)
     assert provider.model_name == "gemini-1.5-flash"
