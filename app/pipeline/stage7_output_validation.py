@@ -1,82 +1,94 @@
 """
-Pipeline Stage 7 – Output Validation.
+Pipeline Stage 7 – Understanding Check.
 
-Responsibility: Validate the recommendation result against the output
-schema, verify all citations reference real evidence IDs, and ensure the
-overall confidence meets the configured threshold.  Trigger
-repair/retry if validation fails.
-
-TODO (next task): implement citation cross-referencing and auto-repair
-prompt for low-confidence or schema-invalid outputs.
+Responsibility: Formulate conceptual questions, small exercises, and explain-back
+prompts; detect and address misconceptions before code is granted.
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 import structlog
 
-from app.config import get_settings
 from app.models.pipeline import (
-    OutputValidationResult,
-    RecommendationResult,
+    ExplanationResult,
+    QuestionType,
     StageMetrics,
-    ValidationResult,
+    UnderstandingCheckResult,
+    UnderstandingQuestion,
+    UnderstandingResult,
 )
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 7
-STAGE_NAME = "output_validation"
+STAGE_NAME = "Understanding Check"
 
 
 async def run(
-    recommendation_result: RecommendationResult,
-    validation_result: ValidationResult,
-) -> OutputValidationResult:
+    explanation_result: ExplanationResult,
+    learner_response: str | None = None,
+) -> UnderstandingCheckResult:
     """
-    Stage 7 entry point.
-
-    Args:
-        recommendation_result: Output from Stage 6.
-        validation_result:     Stage 4 output – used for citation checking.
-
-    Returns:
-        OutputValidationResult – typed model passed to Stage 8.
+    Stage 7 entry point: Generate conceptual questions and evaluate learner response.
     """
-    cfg = get_settings()
     started_at = datetime.now(UTC)
-    issues: list[str] = []
 
-    # Placeholder: basic confidence check only.
-    confidence_ok = (
-        recommendation_result.overall_confidence >= cfg.confidence_threshold
-    )
-    if not confidence_ok:
-        issues.append(
-            f"Overall confidence {recommendation_result.overall_confidence:.2f} "
-            f"is below threshold {cfg.confidence_threshold:.2f}."
+    concept_id = explanation_result.concept_nodes[0].id if explanation_result.concept_nodes else "core"
+
+    questions = [
+        UnderstandingQuestion(
+            concept_id=concept_id,
+            question_text="Why do we avoid untyped dictionaries across architectural boundaries?",
+            question_type=QuestionType.CONCEPTUAL,
+            expected_points=[
+                "Type safety and static checking",
+                "Schema validation at boundaries",
+                "Self-documenting domain models",
+            ],
+        ),
+        UnderstandingQuestion(
+            concept_id=concept_id,
+            question_text="Explain in your own words how the readiness gate prevents passive copy-pasting.",
+            question_type=QuestionType.EXPLAIN_BACK,
+            expected_points=[
+                "Forces active recall or implementation attempt first",
+                "Verifies conceptual understanding before code assistance",
+            ],
+        ),
+    ]
+
+    results: list[UnderstandingResult] = []
+    if learner_response:
+        # Stub check evaluating learner's answer
+        passed = len(learner_response.strip()) >= 20
+        results.append(
+            UnderstandingResult(
+                question_id=questions[0].question_id,
+                passed=passed,
+                learner_response=learner_response,
+                feedback="Good conceptual grasp demonstrated." if passed else "Answer needs more depth.",
+                detected_misconceptions=[] if passed else ["Incomplete understanding of boundary validation"],
+                score=1.0 if passed else 0.5,
+            )
         )
 
-    result = OutputValidationResult(
-        request_id=recommendation_result.request_id,
-        is_valid=confidence_ok and len(issues) == 0,
-        schema_valid=True,           # Pydantic already enforced this
-        citations_valid=True,        # TODO: cross-reference citation IDs
-        confidence_acceptable=confidence_ok,
-        repair_attempted=False,
-        issues=issues,
-        metrics=StageMetrics(
-            stage_id=STAGE_ID,
-            stage_name=STAGE_NAME,
-            started_at=started_at,
-            ended_at=datetime.now(UTC),
-        ),
+    ended_at = datetime.now(UTC)
+    metrics = StageMetrics(
+        stage_id=STAGE_ID,
+        stage_name=STAGE_NAME,
+        started_at=started_at,
+        ended_at=ended_at,
+        latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
 
     logger.info(
-        "stage7_output_validation",
-        request_id=result.request_id,
-        is_valid=result.is_valid,
-        issues=result.issues,
+        "stage7_understanding_check",
+        question_count=len(questions),
+        evaluated_count=len(results),
     )
-    return result
+
+    return UnderstandingCheckResult(
+        questions=questions,
+        results=results,
+        metrics=metrics,
+    )

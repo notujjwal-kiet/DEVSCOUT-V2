@@ -8,8 +8,9 @@ import pytest
 from app.config import Settings, get_settings
 
 
-def test_default_settings():
+def test_default_settings(monkeypatch):
     """Settings instantiate with sensible defaults without a .env file."""
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     s = Settings()
     assert s.app_env == "development"
     assert s.app_port == 8000

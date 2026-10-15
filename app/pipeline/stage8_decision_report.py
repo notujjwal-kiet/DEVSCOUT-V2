@@ -1,81 +1,85 @@
 """
-Pipeline Stage 8 – Decision Report.
+Pipeline Stage 8 – Code Assistance Gate.
 
-Responsibility: Assemble the final DecisionReport from all upstream
-stage outputs and return it to the API layer for delivery to the frontend.
-
-TODO (next task): persist report to PostgreSQL, attach full pipeline
-metrics timeline.
+Responsibility: Enforce the pedagogical code gate policy. Decides whether candidate
+code (or snippet) may be released to the learner or if an understanding check is required.
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 import structlog
 
 from app.models.pipeline import (
-    DecisionReport,
-    DeveloperInput,
-    OutputValidationResult,
-    ProcessedInput,
-    RecommendationResult,
-    ResearchResult,
+    CodeGateDecision,
+    CodeGateLevel,
+    CodeGateResult,
+    Snippet,
     StageMetrics,
+)
+from app.policy.code_gate import (
+    LearnerReadiness,
+    ReadinessPolicyConfig,
+    evaluate_code_gate,
 )
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 8
-STAGE_NAME = "decision_report"
+STAGE_NAME = "Code Assistance Gate"
 
 
 async def run(
-    developer_input: DeveloperInput,
-    processed_input: ProcessedInput,
-    research_result: ResearchResult,
-    recommendation_result: RecommendationResult,
-    output_validation: OutputValidationResult,
-    all_metrics: list[StageMetrics],
-) -> DecisionReport:
+    explicit_request: bool = False,
+    wants_full_code: bool = False,
+    wants_snippet: bool = False,
+    readiness: LearnerReadiness | None = None,
+    proposed_snippets: list[Snippet] | None = None,
+    proposed_full_code: str | None = None,
+    has_explanation: bool = True,
+    config: ReadinessPolicyConfig | None = None,
+) -> CodeGateResult:
     """
-    Stage 8 entry point.
-
-    Args:
-        developer_input:       Stage 1 output.
-        processed_input:       Stage 2 output.
-        research_result:       Stage 3 output (latest iteration).
-        recommendation_result: Stage 6 output.
-        output_validation:     Stage 7 output.
-        all_metrics:           Collected StageMetrics from every stage.
-
-    Returns:
-        DecisionReport – the final artifact sent to the frontend.
+    Stage 8 entry point: Evaluate code gate policy and determine permitted code level.
     """
     started_at = datetime.now(UTC)
 
-    report = DecisionReport(
-        request_id=developer_input.request_id,
-        question=developer_input.question,
-        summary="[Placeholder] Report summary not yet generated.",
-        recommendations=recommendation_result.recommendations,
-        overall_confidence=recommendation_result.overall_confidence,
-        evidence_items=research_result.evidence_items,
-        pipeline_metrics=all_metrics,
+    decision: CodeGateDecision = evaluate_code_gate(
+        explicit_request=explicit_request,
+        wants_full_code=wants_full_code,
+        wants_snippet=wants_snippet,
+        readiness=readiness,
+        proposed_snippets=proposed_snippets,
+        proposed_full_code=proposed_full_code,
+        has_explanation=has_explanation,
+        config=config,
     )
 
-    all_metrics.append(
-        StageMetrics(
-            stage_id=STAGE_ID,
-            stage_name=STAGE_NAME,
-            started_at=started_at,
-            ended_at=datetime.now(UTC),
-        )
+    allowed_snippets: list[Snippet] = []
+    if decision.level == CodeGateLevel.SNIPPET and proposed_snippets:
+        allowed_snippets = proposed_snippets[:3]
+
+    allowed_full_code: str | None = None
+    if decision.level == CodeGateLevel.FULL:
+        allowed_full_code = proposed_full_code
+
+    ended_at = datetime.now(UTC)
+    metrics = StageMetrics(
+        stage_id=STAGE_ID,
+        stage_name=STAGE_NAME,
+        started_at=started_at,
+        ended_at=ended_at,
+        latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
 
     logger.info(
-        "stage8_decision_report",
-        report_id=report.report_id,
-        request_id=report.request_id,
-        confidence=report.overall_confidence,
+        "stage8_code_gate",
+        level=decision.level,
+        violations_count=len(decision.violations),
     )
-    return report
+
+    return CodeGateResult(
+        decision=decision,
+        allowed_snippets=allowed_snippets,
+        full_code=allowed_full_code,
+        metrics=metrics,
+    )

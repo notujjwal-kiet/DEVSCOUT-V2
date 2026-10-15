@@ -1,58 +1,85 @@
 """
-Pipeline Stage 2 – Input Processing.
+Pipeline Stage 2 – Intent & Learning Plan.
 
-Responsibility: Normalise the question, extract named entities (tech
-stack references, decision entities), and infer the decision intent.
-
-TODO (next task): implement NLP entity extraction via the Strands agent.
+Responsibility: Identify knowledge gaps, targeted outcomes, required depth,
+and construct incremental milestones for the learner's project.
+Feedback loop: user questions -> 2/3, progress -> 2 (plan update).
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 import structlog
 
-from app.models.pipeline import DeveloperInput, ProcessedInput, StageMetrics
+from app.models.pipeline import (
+    GoalContextResult,
+    IntentPlanResult,
+    LearningPlan,
+    Milestone,
+    StageMetrics,
+)
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 2
-STAGE_NAME = "input_processing"
+STAGE_NAME = "Intent & Learning Plan"
 
 
-async def run(developer_input: DeveloperInput) -> ProcessedInput:
+async def run(
+    goal_context: GoalContextResult,
+    depth_level: str = "intermediate",
+) -> IntentPlanResult:
     """
-    Stage 2 entry point.
-
-    Args:
-        developer_input: Output from Stage 1.
-
-    Returns:
-        ProcessedInput – typed model passed to Stage 3.
+    Stage 2 entry point: Generate structured learning plan with milestones.
     """
     started_at = datetime.now(UTC)
 
-    # Placeholder: pass through with minimal normalisation.
-    normalized = developer_input.question.strip()
+    # Stub: Derive knowledge gaps and milestones from goal and stack
+    gaps = [
+        f"Core principles of {skill}" for skill in goal_context.goal.target_skills
+    ] or ["Architecture and best practices"]
 
-    result = ProcessedInput(
-        request_id=developer_input.request_id,
-        original_question=developer_input.question,
-        normalized_question=normalized,
-        entities=[],       # TODO: populate via NLP
-        intent=None,       # TODO: classify intent
-        context=developer_input.context,
-        metrics=StageMetrics(
-            stage_id=STAGE_ID,
-            stage_name=STAGE_NAME,
-            started_at=started_at,
-            ended_at=datetime.now(UTC),
+    outcomes = [
+        f"Master practical implementation of {goal_context.goal.title}",
+        "Understand design trade-offs and performance implications",
+    ]
+
+    milestones = [
+        Milestone(
+            title="Foundation & Setup",
+            description="Understand core concepts and configure environment.",
+            target_outcome="Working baseline setup with no copy-pasted boilerplate.",
+            estimated_duration_minutes=30,
         ),
+        Milestone(
+            title="Core Implementation",
+            description="Implement main feature guided by incremental tasks.",
+            target_outcome="Core feature functional and understood.",
+            estimated_duration_minutes=60,
+        ),
+    ]
+
+    plan = LearningPlan(
+        goal_id=goal_context.goal.goal_id,
+        knowledge_gaps=gaps,
+        learning_outcomes=outcomes,
+        depth_level=depth_level,
+        milestones=milestones,
+    )
+
+    ended_at = datetime.now(UTC)
+    metrics = StageMetrics(
+        stage_id=STAGE_ID,
+        stage_name=STAGE_NAME,
+        started_at=started_at,
+        ended_at=ended_at,
+        latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
 
     logger.info(
-        "stage2_input_processing",
-        request_id=result.request_id,
-        entities=result.entities,
+        "stage2_learning_plan",
+        plan_id=plan.plan_id,
+        goal_id=plan.goal_id,
+        milestone_count=len(plan.milestones),
     )
-    return result
+
+    return IntentPlanResult(plan=plan, metrics=metrics)

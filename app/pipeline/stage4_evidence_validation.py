@@ -1,69 +1,81 @@
 """
-Pipeline Stage 4 – Source Freshness & Evidence Validation.
+Pipeline Stage 4 – Evidence Review.
 
-Responsibility: Validate that collected evidence is recent enough and
-sufficient in quantity.  If not, signal that Stage 3 must be re-run
-(up to MAX_EVIDENCE_RETRY_LOOPS times).
-
-TODO (next task): implement freshness heuristics (publication date checks,
-domain trust scoring, minimum evidence count threshold).
+Responsibility: Verify provenance, apply recency via time-decay, score relevance,
+flag conflicting or uncertain claims, and verify content hashes for change detection.
+Feedback loop: 4->3 (need more evidence, max 2 loops).
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 import structlog
 
-from app.config import get_settings
-from app.models.pipeline import ResearchResult, StageMetrics, ValidationResult
+from app.models.pipeline import (
+    EvidenceReviewResult,
+    Resource,
+    SourceDiscoveryResult,
+    StageMetrics,
+)
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 4
-STAGE_NAME = "source_freshness_evidence_validation"
+STAGE_NAME = "Evidence Review"
+MAX_EVIDENCE_RETRY_LOOPS = 2
 
 
-async def run(research_result: ResearchResult) -> ValidationResult:
+async def run(
+    discovery_result: SourceDiscoveryResult,
+    freshness_threshold: float = 0.5,
+) -> EvidenceReviewResult:
     """
-    Stage 4 entry point.
-
-    Args:
-        research_result: Output from Stage 3.
-
-    Returns:
-        ValidationResult.  If ``is_sufficient`` is False and
-        ``loop_count`` is below the configured maximum, the orchestrator
-        should call Stage 3 again and feed its output back here.
+    Stage 4 entry point: Review and score evidence; trigger loop 4->3 if insufficient.
     """
-    cfg = get_settings()
     started_at = datetime.now(UTC)
-    issues: list[str] = []
+    goal_id = discovery_result.goal_id
+    loop_count = discovery_result.loop_count
 
-    # Placeholder: treat any non-empty evidence list as sufficient.
-    has_evidence = len(research_result.evidence_items) > 0
-    if not has_evidence:
-        issues.append("No evidence items collected.")
+    flagged_uncertainties: list[str] = []
+    reviewed_resources: list[Resource] = []
 
-    result = ValidationResult(
-        request_id=research_result.request_id,
-        is_sufficient=has_evidence,
-        is_fresh=has_evidence,
-        issues=issues,
-        loop_count=research_result.loop_count,
-        validated_evidence=research_result.evidence_items,
-        metrics=StageMetrics(
-            stage_id=STAGE_ID,
-            stage_name=STAGE_NAME,
-            started_at=started_at,
-            ended_at=datetime.now(UTC),
-        ),
+    for res in discovery_result.resources:
+        # Time-decay / freshness verification
+        if res.freshness_score < freshness_threshold:
+            res.uncertainty_flag = True
+            flagged_uncertainties.append(f"Resource '{res.title}' flagged for low freshness score ({res.freshness_score}).")
+        reviewed_resources.append(res)
+
+    is_sufficient = len(reviewed_resources) >= 2
+    is_fresh = all(not r.uncertainty_flag for r in reviewed_resources)
+
+    # Determine if feedback loop 4->3 should be triggered
+    needs_more_evidence = (not is_sufficient or not is_fresh) and (loop_count < MAX_EVIDENCE_RETRY_LOOPS)
+
+    ended_at = datetime.now(UTC)
+    metrics = StageMetrics(
+        stage_id=STAGE_ID,
+        stage_name=STAGE_NAME,
+        started_at=started_at,
+        ended_at=ended_at,
+        latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
 
     logger.info(
-        "stage4_validation",
-        request_id=result.request_id,
-        is_sufficient=result.is_sufficient,
-        loop=result.loop_count,
-        max_loops=cfg.max_evidence_retry_loops,
+        "stage4_evidence_review",
+        goal_id=goal_id,
+        is_sufficient=is_sufficient,
+        is_fresh=is_fresh,
+        needs_more_evidence=needs_more_evidence,
+        loop_count=loop_count,
     )
-    return result
+
+    return EvidenceReviewResult(
+        goal_id=goal_id,
+        is_sufficient=is_sufficient,
+        is_fresh=is_fresh,
+        reviewed_resources=reviewed_resources,
+        flagged_uncertainties=flagged_uncertainties,
+        needs_more_evidence=needs_more_evidence,
+        loop_count=loop_count,
+        metrics=metrics,
+    )

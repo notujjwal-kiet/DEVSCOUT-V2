@@ -1,57 +1,70 @@
 """
-Pipeline Stage 9 – Developer Feedback.
+Pipeline Stage 9 – Progress & Reflection.
 
-Responsibility: Accept post-report feedback from the developer, store it
-in PostgreSQL, and feed aggregated signals into the Context & Memory layer
-to improve future recommendations.
-
-TODO (next task): persist feedback to the DB, compute aggregated signal
-scores, and update the context memory embeddings.
+Responsibility: Record learning history, completed topics, learner feedback,
+reflections, and recommend next steps; persist as updated learning context.
+Feedback loop: progress -> 2 (plan update).
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 import structlog
 
-from app.models.pipeline import DeveloperFeedback, FeedbackAck, StageMetrics
+from app.models.pipeline import (
+    ProgressRecord,
+    ProgressReflectionResult,
+    StageMetrics,
+)
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 9
-STAGE_NAME = "developer_feedback"
+STAGE_NAME = "Progress & Reflection"
 
 
-async def run(feedback: DeveloperFeedback) -> FeedbackAck:
+async def run(
+    learner_id: str,
+    goal_id: str,
+    completed_topics: list[str] | None = None,
+    reflection_notes: str | None = None,
+    next_steps: list[str] | None = None,
+) -> ProgressReflectionResult:
     """
-    Stage 9 entry point.
-
-    Args:
-        feedback: Feedback submitted by the developer via the API.
-
-    Returns:
-        FeedbackAck – confirmation that feedback was received/stored.
+    Stage 9 entry point: Persist progress record and reflections.
     """
     started_at = datetime.now(UTC)
 
-    # Placeholder: acknowledge without persisting.
-    ack = FeedbackAck(
-        feedback_id=feedback.feedback_id,
-        stored=False,   # TODO: set True after DB write
-        message="[Placeholder] Feedback received but not yet persisted.",
+    completed = completed_topics or []
+    recommended_next = next_steps or [
+        "Review code gate feedback",
+        "Implement independent exercise without assistance",
+    ]
+
+    progress = ProgressRecord(
+        learner_id=learner_id,
+        goal_id=goal_id,
+        completed_topics=completed,
+        reflection_notes=reflection_notes,
+        next_recommended_steps=recommended_next,
     )
 
-    _metrics = StageMetrics(
+    ended_at = datetime.now(UTC)
+    metrics = StageMetrics(
         stage_id=STAGE_ID,
         stage_name=STAGE_NAME,
         started_at=started_at,
-        ended_at=datetime.now(UTC),
+        ended_at=ended_at,
+        latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
 
     logger.info(
-        "stage9_developer_feedback",
-        feedback_id=ack.feedback_id,
-        report_id=feedback.report_id,
-        rating=feedback.rating,
+        "stage9_progress_reflection",
+        record_id=progress.record_id,
+        learner_id=learner_id,
+        completed_count=len(completed),
     )
-    return ack
+
+    return ProgressReflectionResult(
+        progress=progress,
+        metrics=metrics,
+    )

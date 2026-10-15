@@ -28,10 +28,12 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "INFO"
 
-    # ── Ollama ────────────────────────────────────────────────────
+    # ── LLM Provider ──────────────────────────────────────────────
+    llm_provider: str = Field(default="ollama")
     ollama_host: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3.2")
     ollama_timeout: int = Field(default=120, ge=10)
+    gemini_model: str = Field(default="gemini-1.5-flash")
 
     # ── PostgreSQL ────────────────────────────────────────────────
     database_url: str = Field(
