@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     ollama_host: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3.2")
     ollama_timeout: int = Field(default=120, ge=10)
-    gemini_model: str = Field(default="gemini-1.5-flash")
+    ollama_think: bool = Field(default=False)
+    gemini_api_key: str | None = Field(default=None)
+    gemini_model: str | None = Field(default=None)
 
     # ── PostgreSQL ────────────────────────────────────────────────
     database_url: str = Field(

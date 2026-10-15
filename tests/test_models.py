@@ -5,6 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.pipeline import (
+    AttemptReview,
+    AttemptStatus,
     CodeGateDecision,
     CodeGateLevel,
     ConceptEdge,
@@ -159,3 +161,13 @@ def test_learning_response_composition():
     )
     assert resp.response_id != ""
     assert resp.code_gate_decision.level == CodeGateLevel.EXPLAIN
+
+
+def test_attempt_review_model():
+    """AttemptReview validates status and reasons."""
+    review = AttemptReview(
+        status=AttemptStatus.ACCEPTABLE,
+        reasons=["Valid syntax and sufficient line count."],
+    )
+    assert review.status == AttemptStatus.ACCEPTABLE
+    assert len(review.reasons) == 1

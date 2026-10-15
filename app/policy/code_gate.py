@@ -18,7 +18,13 @@ from __future__ import annotations
 import re
 from pydantic import BaseModel, Field
 
-from app.models.pipeline import CodeGateDecision, CodeGateLevel, Snippet
+from app.models.pipeline import (
+    AttemptReview,
+    AttemptStatus,
+    CodeGateDecision,
+    CodeGateLevel,
+    Snippet,
+)
 
 MAX_SNIPPET_LINES = 15
 MAX_SNIPPET_COUNT = 3
@@ -35,14 +41,14 @@ class LearnerReadiness(BaseModel):
     """Signals reflecting learner progress towards code readiness."""
 
     understanding_check_passed: bool = False
-    learner_attempt_submitted: bool = False
+    attempt_review: AttemptReview | None = None
     final_build_submitted: bool = False
 
 
 class ReadinessPolicyConfig(BaseModel):
     """
     Configurable readiness policy in one central place.
-    Readiness = understanding check passed OR learner submitted attempt OR final build submitted.
+    Readiness = understanding check passed OR acceptable attempt submitted OR final build submitted.
     """
 
     allow_understanding_check: bool = True
@@ -55,7 +61,11 @@ class ReadinessPolicyConfig(BaseModel):
             return False
         if self.allow_understanding_check and readiness.understanding_check_passed:
             return True
-        if self.allow_learner_attempt and readiness.learner_attempt_submitted:
+        if (
+            self.allow_learner_attempt
+            and readiness.attempt_review is not None
+            and readiness.attempt_review.status == AttemptStatus.ACCEPTABLE
+        ):
             return True
         if self.allow_final_build and readiness.final_build_submitted:
             return True

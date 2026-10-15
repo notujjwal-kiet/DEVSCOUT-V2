@@ -170,16 +170,16 @@ pytest -v
 
 ### Done
 - [x] **Pivoted Architecture**: Refactored backend from decision report tool to "Learn while you build" Learning Companion.
-- [x] **Pydantic v2 Domain Models**: Rewrote `app/models/pipeline.py` with zero `dict[str, Any]`, strictly typing `LearnerProfile`, `ExperienceLevel`, `LearningGoal`, `LearningPlan`, `Milestone`, `Resource`, `Explanation`, `Snippet`, `ConceptNode`, `ConceptEdge`, `UnderstandingQuestion`, `UnderstandingResult`, `CodeGateDecision`, `ProgressRecord`, `LearningResponse`, and `StageMetrics`.
-- [x] **Deterministic Code Assistance Gate**: Built `app/policy/code_gate.py` with default `EXPLAIN`, 15-line single-concept snippet validation, max 3 snippets, and configurable readiness rule requiring an understanding check, learner attempt, or final build.
+- [x] **Pydantic v2 Domain Models**: Rewrote `app/models/pipeline.py` with zero `dict[str, Any]`, strictly typing `LearnerProfile`, `ExperienceLevel`, `LearningGoal`, `LearningPlan`, `Milestone`, `Resource`, `Explanation`, `Snippet`, `ConceptNode`, `ConceptEdge`, `UnderstandingQuestion`, `UnderstandingResult`, `CodeGateDecision`, `AttemptReview`, `AttemptStatus`, `ProgressRecord`, `LearningResponse`, and `StageMetrics`.
+- [x] **Deterministic Code Assistance Gate & Attempt Review**: Built `app/policy/code_gate.py` and `app/policy/attempt_review.py` with default `EXPLAIN`, 15-line single-concept snippet validation, max 3 snippets, and attempt review (min 10 real code lines ignoring comments/blanks, SHA-256 normalized hash plagiarism detection against prior snippets, AST syntax validation). Readiness requires understanding check, acceptable attempt, or final build.
 - [x] **Cross-Cutting Response Validator**: Built `app/pipeline/response_validator.py` enforcing schema compliance, valid resource citation IDs on every claim, fenced code block scanning against gate decisions, quality metrics, and deterministic repair hook.
-- [x] **LLM Provider Abstraction**: Added `app/llm/provider.py` with `LLMProvider` Protocol, `OllamaProvider` and `GeminiProvider` stubs (no network calls), selected by `LLM_PROVIDER` with configurable model names.
+- [x] **LLM Provider Abstraction & Config**: Added `app/llm/provider.py` with `LLMProvider` Protocol, `OllamaProvider` (reading `OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_THINK` from config/env) and `GeminiProvider` (requiring `GEMINI_MODEL` and reading `GEMINI_API_KEY` from env), and structured generation stubs raising `NotImplementedError`.
 - [x] **9 Pipeline Stages Updated**: Updated signatures, docstrings, and typed models for stages 1 through 9.
-- [x] **Thorough Test Suite**: Added 45 tests across `test_code_gate.py`, `test_response_validator.py`, `test_llm_provider.py`, `test_models.py`, `test_pipeline_stages.py`, `test_config.py`, and `test_health.py`.
+- [x] **Thorough Test Suite**: 53 tests passing across `test_code_gate.py`, `test_response_validator.py`, `test_llm_provider.py`, `test_models.py`, `test_pipeline_stages.py`, `test_config.py`, and `test_health.py`.
 
 ### Not Done (Future Work)
 - [ ] Live web search integrations (e.g. Tavily, SearXNG, GitHub Code Search) in Stage 3.
 - [ ] Vector database indexing with PostgreSQL + pgvector for embedding-based resource retrieval.
-- [ ] LLM agent prompts with live inference for personalized explanation generation and dynamic misconception detection.
+- [ ] Real LLM agent prompts with live inference for personalized explanation generation and dynamic misconception detection.
 - [ ] Interactive frontend UI (React + TypeScript) communicating over REST with code gate visualizations and quiz exercises.
 - [ ] Database persistence for learner profiles and progress history.

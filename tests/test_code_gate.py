@@ -1,5 +1,5 @@
 """
-Tests for app/policy/code_gate.py – Deterministic LLM-free Code Assistance Gate.
+Tests for app/policy/code_gate.py and app/policy/attempt_review.py.
 
 Covers:
 - explain default
@@ -7,15 +7,30 @@ Covers:
 - 16-line snippet rejected
 - >3 snippets rejected
 - full code without readiness -> REQUIRE_CHECK
-- full code with each readiness path (understanding check, learner attempt, final build)
+- trivial attempt does NOT unlock FULL
+- copied snippet does NOT unlock FULL
+- invalid syntax attempt does NOT unlock FULL
+- acceptable attempt unlocks FULL
+- each readiness path (understanding check, acceptable attempt, final build)
 - no explicit request -> EXPLAIN
 - snippet missing explanation rejected
-- full runnable entrypoint in snippet rejected
 - configurable readiness rule
+- attempt_review logic (min lines, blanks/comments ignored, SHA-256 hash match, AST check)
 """
 import pytest
 
-from app.models.pipeline import CodeGateLevel, Snippet
+from app.models.pipeline import (
+    AttemptReview,
+    AttemptStatus,
+    CodeGateLevel,
+    Snippet,
+)
+from app.policy.attempt_review import (
+    count_real_lines,
+    hash_code,
+    normalize_code,
+    review_attempt,
+)
 from app.policy.code_gate import (
     LearnerReadiness,
     ReadinessPolicyConfig,
@@ -53,8 +68,6 @@ def test_15_line_snippet_ok():
 def test_16_line_snippet_rejected():
     """Snippet with 16 lines violates policy and drops to EXPLAIN with recorded violation."""
     code_16_lines = "\n".join([f"x_{i} = {i}" for i in range(16)])
-    # Pydantic model itself rejects line_count > 15, but let's test evaluation of candidate code
-    # We can create a mock or pass a snippet with 16 physical lines:
     with pytest.raises(Exception):
         # Snippet Pydantic validation rejects >15 lines
         Snippet(
@@ -65,8 +78,6 @@ def test_16_line_snippet_rejected():
         )
 
     # In evaluate_code_gate directly:
-    # If a snippet object with code > 15 lines was submitted
-    # We test evaluate_code_gate's line count inspector by constructing a snippet or passing it:
     snippet_15 = Snippet(
         code="\n".join([f"x_{i} = {i}" for i in range(15)]),
         concept="Valid count",
@@ -111,12 +122,103 @@ def test_full_code_without_readiness_requires_check():
         proposed_full_code="def build(): pass",
         readiness=LearnerReadiness(
             understanding_check_passed=False,
-            learner_attempt_submitted=False,
+            attempt_review=None,
             final_build_submitted=False,
         ),
     )
     assert decision.level == CodeGateLevel.REQUIRE_CHECK
     assert any("readiness criteria not met" in r for r in decision.reasons)
+
+
+def test_trivial_attempt_does_not_unlock_full():
+    """Trivial attempt (e.g. print('x')) does not satisfy readiness and returns REQUIRE_CHECK."""
+    trivial_code = "print('x')"
+    review = review_attempt(trivial_code)
+    assert review.status == AttemptStatus.TRIVIAL
+
+    decision = evaluate_code_gate(
+        explicit_request=True,
+        wants_full_code=True,
+        proposed_full_code="def solution(): return 42",
+        has_explanation=True,
+        readiness=LearnerReadiness(attempt_review=review),
+    )
+    assert decision.level == CodeGateLevel.REQUIRE_CHECK
+    assert any("readiness criteria not met" in r for r in decision.reasons)
+
+
+def test_copied_snippet_does_not_unlock_full():
+    """Attempt that copies a previously provided snippet triggers COPIED_SNIPPET and does not unlock FULL."""
+    snippet_code = "x = 1\ny = 2\nresult = x + y"
+    snippet_hash = hash_code(snippet_code)
+
+    learner_attempt = "  x = 1\n  y = 2\n  result = x + y\n"
+    review = review_attempt(
+        learner_attempt,
+        previous_snippet_hashes=[snippet_hash],
+    )
+    assert review.status == AttemptStatus.COPIED_SNIPPET
+
+    decision = evaluate_code_gate(
+        explicit_request=True,
+        wants_full_code=True,
+        proposed_full_code="def solution(): return 42",
+        has_explanation=True,
+        readiness=LearnerReadiness(attempt_review=review),
+    )
+    assert decision.level == CodeGateLevel.REQUIRE_CHECK
+
+
+def test_invalid_syntax_does_not_unlock_full():
+    """Attempt with invalid Python syntax triggers INVALID and does not unlock FULL."""
+    broken_code = """
+def broken_syntax(
+    x = 10
+    if x > 5
+        return True
+"""
+    review = review_attempt(broken_code)
+    assert review.status == AttemptStatus.INVALID
+
+    decision = evaluate_code_gate(
+        explicit_request=True,
+        wants_full_code=True,
+        proposed_full_code="def solution(): return 42",
+        has_explanation=True,
+        readiness=LearnerReadiness(attempt_review=review),
+    )
+    assert decision.level == CodeGateLevel.REQUIRE_CHECK
+
+
+def test_acceptable_attempt_unlocks_full():
+    """Acceptable substantive attempt with >=10 real lines and valid syntax unlocks FULL."""
+    substantive_code = """
+# Rate limiter implementation attempt
+class TokenBucket:
+    def __init__(self, capacity: int, fill_rate: float):
+        self.capacity = capacity
+        self.fill_rate = fill_rate
+        self.tokens = capacity
+        self.last_fill = 0.0
+
+    def consume(self, amount: int = 1) -> bool:
+        if self.tokens >= amount:
+            self.tokens -= amount
+            return True
+        return False
+"""
+    review = review_attempt(substantive_code)
+    assert review.status == AttemptStatus.ACCEPTABLE
+
+    decision = evaluate_code_gate(
+        explicit_request=True,
+        wants_full_code=True,
+        proposed_full_code="def solution(): return 42",
+        has_explanation=True,
+        readiness=LearnerReadiness(attempt_review=review),
+    )
+    assert decision.level == CodeGateLevel.FULL
+    assert any("readiness verified" in r for r in decision.reasons)
 
 
 def test_full_code_readiness_path_understanding_check():
@@ -127,19 +229,6 @@ def test_full_code_readiness_path_understanding_check():
         proposed_full_code="def solution(): return 42",
         has_explanation=True,
         readiness=LearnerReadiness(understanding_check_passed=True),
-    )
-    assert decision.level == CodeGateLevel.FULL
-    assert any("readiness verified" in r for r in decision.reasons)
-
-
-def test_full_code_readiness_path_learner_attempt():
-    """Readiness path 2: Learner submitted own attempt allows FULL code."""
-    decision = evaluate_code_gate(
-        explicit_request=True,
-        wants_full_code=True,
-        proposed_full_code="def solution(): return 42",
-        has_explanation=True,
-        readiness=LearnerReadiness(learner_attempt_submitted=True),
     )
     assert decision.level == CodeGateLevel.FULL
     assert any("readiness verified" in r for r in decision.reasons)
@@ -188,7 +277,6 @@ def test_snippet_missing_explanation_rejected():
 
 def test_configurable_readiness_rule():
     """Readiness rule can be custom configured in one place."""
-    # Custom rule: only allow final build, disallow understanding check
     strict_config = ReadinessPolicyConfig(
         allow_understanding_check=False,
         allow_learner_attempt=False,
@@ -213,3 +301,19 @@ def test_configurable_readiness_rule():
         config=strict_config,
     )
     assert decision_ok.level == CodeGateLevel.FULL
+
+
+def test_attempt_review_comments_and_blanks_ignored():
+    """Blanks and comments must not count toward the min real lines requirement."""
+    comment_padded_code = """
+# Comment line 1
+# Comment line 2
+
+# Comment line 3
+
+# Comment line 4
+print("only one real line")
+"""
+    assert count_real_lines(comment_padded_code) == 1
+    review = review_attempt(comment_padded_code, min_real_lines=10)
+    assert review.status == AttemptStatus.TRIVIAL

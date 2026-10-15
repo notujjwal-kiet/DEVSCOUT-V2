@@ -52,6 +52,13 @@ class CodeGateLevel(StrEnum):
     REQUIRE_CHECK = "REQUIRE_CHECK"
 
 
+class AttemptStatus(StrEnum):
+    ACCEPTABLE = "ACCEPTABLE"
+    TRIVIAL = "TRIVIAL"
+    COPIED_SNIPPET = "COPIED_SNIPPET"
+    INVALID = "INVALID"
+
+
 class PipelineStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -210,6 +217,13 @@ class CodeGateDecision(BaseModel):
     level: CodeGateLevel
     reasons: list[str] = Field(default_factory=list)
     violations: list[str] = Field(default_factory=list)
+
+
+class AttemptReview(BaseModel):
+    """Deterministic review of a learner's code attempt."""
+
+    status: AttemptStatus
+    reasons: list[str] = Field(default_factory=list)
 
 
 # ── Stage 7 – Understanding Check ─────────────────────────────────────────────

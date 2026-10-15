@@ -2,6 +2,8 @@
 Models package for DEVSCOUT Learning Companion.
 """
 from app.models.pipeline import (
+    AttemptReview,
+    AttemptStatus,
     CodeGateDecision,
     CodeGateLevel,
     CodeGateResult,
@@ -36,6 +38,8 @@ from app.models.pipeline import (
 )
 
 __all__ = [
+    "AttemptReview",
+    "AttemptStatus",
     "CodeGateDecision",
     "CodeGateLevel",
     "CodeGateResult",
