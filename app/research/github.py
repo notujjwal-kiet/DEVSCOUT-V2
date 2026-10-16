@@ -16,18 +16,9 @@ import httpx
 
 from app.models.pipeline import Resource, ResourceType
 from app.research.models import ResearchDocument, ResearchError
+from app.research.scoring import hash_content, normalize, normalize_whitespace
 
 MAX_README_CHARS = 20000
-
-
-def normalize_whitespace(text: str) -> str:
-    """Normalize whitespace by collapsing consecutive whitespace into single spaces."""
-    return " ".join(text.split())
-
-
-def hash_content(text: str) -> str:
-    """Compute SHA-256 digest of whitespace-normalized text."""
-    return hashlib.sha256(normalize_whitespace(text).encode("utf-8")).hexdigest()
 
 
 class GitHubConnector:
