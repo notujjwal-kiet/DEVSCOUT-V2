@@ -143,9 +143,9 @@ class Resource(BaseModel):
     title: str
     retrieved_at: datetime = Field(default_factory=_utcnow)
     content_hash: str
-    reliability: float = Field(..., ge=0.0, le=1.0)
-    freshness_score: float = Field(..., ge=0.0, le=1.0)
-    level_fit: ExperienceLevel
+    reliability: float = Field(default=0.0, ge=0.0, le=1.0)
+    freshness_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    level_fit: ExperienceLevel = ExperienceLevel.BEGINNER
     uncertainty_flag: bool = False
     summary: str = ""
 

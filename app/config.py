@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # ── Evidence / research ───────────────────────────────────────
     evidence_cache_ttl_seconds: int = Field(default=86400, ge=0)
     web_research_mode: Literal["live", "cached"] = "cached"
+    github_token: str | None = Field(default=None)
 
     # ── Pipeline tuning ───────────────────────────────────────────
     max_evidence_retry_loops: int = Field(default=2, ge=1, le=5)
