@@ -1,0 +1,2274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DEVSCOUT V2 — Hackathon Pitch Deck | KRIVA-NEXORBIT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #070a13;
+      --bg-card: rgba(15, 23, 42, 0.75);
+      --bg-card-hover: rgba(30, 41, 59, 0.85);
+      --border-subtle: rgba(56, 189, 248, 0.15);
+      --border-accent: rgba(56, 189, 248, 0.4);
+      --cyan-bright: #38bdf8;
+      --cyan-glow: rgba(56, 189, 248, 0.35);
+      --blue-royal: #2563eb;
+      --blue-electric: #3b82f6;
+      --crimson-accent: #f43f5e;
+      --crimson-soft: rgba(244, 63, 94, 0.15);
+      --emerald-accent: #10b981;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --font-heading: 'Space Grotesk', sans-serif;
+      --font-body: 'Plus Jakarta Sans', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-body);
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      user-select: none;
+    }
+
+    /* Ambient background grid & glow */
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      background-image: 
+        radial-gradient(circle at 50% 10%, rgba(37, 99, 235, 0.15), transparent 45%),
+        radial-gradient(circle at 90% 80%, rgba(56, 189, 248, 0.08), transparent 40%),
+        radial-gradient(circle at 10% 90%, rgba(244, 63, 94, 0.06), transparent 35%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 64px 64px, 64px 64px;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Deck Container */
+    .deck-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* Top Bar */
+    .top-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 64px;
+      padding: 0 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(7, 10, 19, 0.6);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand-pill {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-logo-mark {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(135deg, var(--blue-royal), var(--cyan-bright));
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 16px var(--cyan-glow);
+    }
+
+    .brand-logo-mark svg {
+      width: 16px;
+      height: 16px;
+      fill: #fff;
+    }
+
+    .brand-title {
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 1.15rem;
+      letter-spacing: 0.05em;
+      color: #fff;
+    }
+
+    .brand-tag {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--cyan-bright);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      font-weight: 600;
+    }
+
+    .team-credit {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+    }
+
+    .team-credit strong {
+      color: var(--cyan-bright);
+      font-weight: 600;
+    }
+
+    /* Main Slide Stage (16:9 Aspect ratio frame) */
+    .slide-viewport {
+      position: relative;
+      width: min(94vw, 1500px);
+      height: min(82vh, 840px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(12px) scale(0.985);
+      transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 44px 54px;
+      background: rgba(11, 17, 32, 0.72);
+      border: 1px solid var(--border-subtle);
+      border-radius: 20px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.65), 0 0 1px 1px rgba(255, 255, 255, 0.05) inset;
+    }
+
+    .slide.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0) scale(1);
+      z-index: 5;
+    }
+
+    /* Slide Header */
+    .slide-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+
+    .slide-eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--cyan-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin-bottom: 8px;
+    }
+
+    .slide-eyebrow::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--cyan-bright);
+      box-shadow: 0 0 10px var(--cyan-bright);
+    }
+
+    .slide-title {
+      font-family: var(--font-heading);
+      font-size: 2.35rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+    }
+
+    .slide-title span.accent-cyan {
+      color: var(--cyan-bright);
+    }
+
+    .slide-title span.accent-crimson {
+      color: var(--crimson-accent);
+    }
+
+    .slide-subtitle {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+      font-weight: 400;
+      max-width: 820px;
+      line-height: 1.45;
+    }
+
+    .slide-meta-badge {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.03);
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    /* Slide Content Body */
+    .slide-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      position: relative;
+      width: 100%;
+    }
+
+    /* Slide Footer */
+    .slide-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.82rem;
+      color: var(--text-dim);
+    }
+
+    .footer-principle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+    }
+
+    .footer-principle svg {
+      width: 14px;
+      height: 14px;
+      color: var(--cyan-bright);
+    }
+
+    /* Bottom Navigation Bar */
+    .bottom-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 64px;
+      padding: 0 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+      background: rgba(7, 10, 19, 0.6);
+      backdrop-filter: blur(12px);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .progress-container {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .progress-track {
+      width: 240px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 10%;
+      background: linear-gradient(90deg, var(--blue-royal), var(--cyan-bright));
+      border-radius: 999px;
+      transition: width 0.35s ease;
+      box-shadow: 0 0 10px var(--cyan-bright);
+    }
+
+    .slide-counter {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .slide-counter strong {
+      color: #fff;
+    }
+
+    .nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn-nav {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-nav:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--cyan-bright);
+      color: #fff;
+      box-shadow: 0 0 12px var(--cyan-glow);
+    }
+
+    .btn-nav:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      border-color: rgba(255, 255, 255, 0.04);
+    }
+
+    .nav-hint {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      margin-left: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .kbd {
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      color: var(--text-muted);
+    }
+
+    /* SLIDE 1: Cover */
+    .slide-cover {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 48px;
+      height: 100%;
+      align-items: center;
+    }
+
+    .cover-left {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .cover-badge-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .badge-hackathon {
+      background: rgba(37, 99, 235, 0.15);
+      border: 1px solid rgba(37, 99, 235, 0.4);
+      color: #60a5fa;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 6px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .badge-pivot {
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      color: #fb7185;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 6px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .cover-title {
+      font-family: var(--font-heading);
+      font-size: 4.8rem;
+      font-weight: 800;
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .cover-title span.v2 {
+      font-size: 2.2rem;
+      font-family: var(--font-mono);
+      color: var(--cyan-bright);
+      -webkit-text-fill-color: var(--cyan-bright);
+      vertical-align: super;
+      margin-left: 8px;
+      text-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    .cover-tagline {
+      font-family: var(--font-heading);
+      font-size: 1.85rem;
+      font-weight: 600;
+      color: var(--cyan-bright);
+      letter-spacing: -0.01em;
+      text-shadow: 0 0 25px rgba(56, 189, 248, 0.3);
+    }
+
+    .cover-desc {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      line-height: 1.6;
+      max-width: 600px;
+    }
+
+    .cover-meta {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-top: 10px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .meta-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      letter-spacing: 0.1em;
+    }
+
+    .meta-value {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .cover-visual {
+      position: relative;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Abstract Developer Transformation Artwork */
+    .transformation-art {
+      width: 100%;
+      height: 440px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* SLIDE 2: The Problem */
+    .problem-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 36px;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+    }
+
+    .problem-card {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 32px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .problem-card.card-illusion {
+      border-color: rgba(244, 63, 94, 0.3);
+      box-shadow: 0 0 30px rgba(244, 63, 94, 0.06);
+    }
+
+    .problem-card.card-reality {
+      border-color: rgba(56, 189, 248, 0.3);
+      box-shadow: 0 0 30px rgba(56, 189, 248, 0.06);
+    }
+
+    .problem-card-badge {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+
+    .badge-red {
+      color: #fb7185;
+    }
+
+    .badge-blue {
+      color: var(--cyan-bright);
+    }
+
+    .problem-headline {
+      font-family: var(--font-heading);
+      font-size: 1.55rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+      line-height: 1.25;
+    }
+
+    .visual-contrast-box {
+      margin: 20px 0;
+      background: rgba(2, 6, 23, 0.8);
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      padding: 20px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    /* SLIDE 3: The Pivot */
+    .pivot-container {
+      display: grid;
+      grid-template-columns: 0.85fr auto 1.35fr;
+      gap: 28px;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+    }
+
+    .pivot-column {
+      border-radius: 16px;
+      padding: 32px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .pivot-before {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      opacity: 0.85;
+    }
+
+    .pivot-after {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--cyan-bright);
+      box-shadow: 0 0 40px rgba(56, 189, 248, 0.12);
+      position: relative;
+    }
+
+    .pivot-after::before {
+      content: 'DOMINANT FOCUS';
+      position: absolute;
+      top: -12px;
+      right: 28px;
+      background: var(--blue-royal);
+      color: #fff;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      padding: 3px 10px;
+      border-radius: 4px;
+      box-shadow: 0 0 12px var(--cyan-glow);
+    }
+
+    .pivot-divider {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .pivot-arrow-circle {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid var(--border-accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--cyan-bright);
+      box-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    /* SLIDE 4: The 3 Pillars */
+    .pillars-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+      width: 100%;
+      height: 100%;
+      align-items: stretch;
+    }
+
+    .pillar-card {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 30px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+
+    .pillar-card:hover {
+      border-color: var(--cyan-bright);
+      transform: translateY(-4px);
+      box-shadow: 0 12px 30px -10px rgba(56, 189, 248, 0.15);
+    }
+
+    .pillar-number {
+      font-family: var(--font-mono);
+      font-size: 2.8rem;
+      font-weight: 800;
+      color: rgba(255, 255, 255, 0.08);
+      position: absolute;
+      top: 20px;
+      right: 24px;
+      line-height: 1;
+    }
+
+    .pillar-icon-box {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+
+    .icon-learn {
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: var(--cyan-bright);
+    }
+
+    .icon-analyse {
+      background: rgba(37, 99, 235, 0.15);
+      border: 1px solid rgba(37, 99, 235, 0.35);
+      color: #60a5fa;
+    }
+
+    .icon-build {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: #fb7185;
+    }
+
+    /* Cycle indicator connector */
+    .cycle-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--cyan-bright);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      width: fit-content;
+      margin-top: 14px;
+    }
+
+    /* SLIDE 5: How It Works Pipeline */
+    .pipeline-wrapper {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 32px;
+    }
+
+    .pipeline-steps {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 16px;
+      position: relative;
+    }
+
+    .pipeline-step {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+    }
+
+    .pipeline-step.step-highlight {
+      border-color: var(--cyan-bright);
+      background: rgba(15, 23, 42, 0.9);
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.1);
+    }
+
+    .step-num {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--cyan-bright);
+      padding: 2px 6px;
+      background: rgba(56, 189, 248, 0.1);
+      border-radius: 4px;
+      width: fit-content;
+    }
+
+    .step-title {
+      font-family: var(--font-heading);
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.25;
+    }
+
+    .step-desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .sources-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      padding: 18px 24px;
+      background: rgba(2, 6, 23, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+    }
+
+    .source-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .source-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    /* SLIDE 6: User Journey (FastAPI Auth) */
+    .journey-timeline {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      width: 100%;
+      height: 100%;
+      align-items: stretch;
+    }
+
+    .journey-card {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    }
+
+    .journey-card::after {
+      content: '→';
+      position: absolute;
+      right: -14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--cyan-bright);
+      font-size: 1.2rem;
+      font-weight: 700;
+      z-index: 10;
+    }
+
+    .journey-card:last-child::after {
+      display: none;
+    }
+
+    .journey-phase {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--cyan-bright);
+      margin-bottom: 8px;
+    }
+
+    .journey-heading {
+      font-family: var(--font-heading);
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+
+    .journey-visual-snippet {
+      background: rgba(2, 6, 23, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: #94a3b8;
+      margin: 12px 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    /* SLIDE 7: Differentiator - Readiness Workflow */
+    .diff-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.25fr;
+      gap: 32px;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+    }
+
+    .diff-left {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(244, 63, 94, 0.25);
+      border-radius: 16px;
+      padding: 30px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .diff-right {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--cyan-bright);
+      box-shadow: 0 0 35px rgba(56, 189, 248, 0.12);
+      border-radius: 16px;
+      padding: 30px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .readiness-criteria-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin: 16px 0;
+    }
+
+    .readiness-item {
+      display: flex;
+      gap: 14px;
+      padding: 12px 16px;
+      background: rgba(2, 6, 23, 0.7);
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      align-items: flex-start;
+    }
+
+    .readiness-check-icon {
+      color: var(--emerald-accent);
+      font-weight: 700;
+      font-size: 1rem;
+      margin-top: 2px;
+    }
+
+    .banner-no-bypass {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.82rem;
+      color: #fda4af;
+      font-family: var(--font-mono);
+    }
+
+    /* SLIDE 8: Architecture */
+    .arch-container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .arch-flow-diagram {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 16px;
+      align-items: center;
+    }
+
+    .arch-node {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 22px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+    }
+
+    .arch-node.node-llm {
+      border-color: rgba(244, 63, 94, 0.5);
+      background: rgba(244, 63, 94, 0.06);
+    }
+
+    .arch-node.node-highlight {
+      border-color: var(--cyan-bright);
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .arch-node-title {
+      font-family: var(--font-heading);
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .arch-node-sub {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .arch-warning-callout {
+      background: rgba(244, 63, 94, 0.1);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      border-radius: 10px;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    /* SLIDE 9: Hackathon MVP */
+    .mvp-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 32px;
+      width: 100%;
+      height: 100%;
+      align-items: stretch;
+    }
+
+    .mvp-features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .mvp-feat-card {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .mvp-vision-column {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    /* SLIDE 10: Closing */
+    .closing-container {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .closing-left {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .closing-quote {
+      font-family: var(--font-heading);
+      font-size: 3.2rem;
+      font-weight: 800;
+      line-height: 1.05;
+      color: #fff;
+      letter-spacing: -0.03em;
+    }
+
+    .closing-quote span.gradient {
+      background: linear-gradient(135deg, var(--cyan-bright), var(--blue-electric));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .closing-triad {
+      display: flex;
+      gap: 16px;
+      margin-top: 10px;
+    }
+
+    .triad-box {
+      flex: 1;
+      padding: 16px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      text-align: center;
+    }
+
+    .triad-box .val {
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .triad-box .lbl {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+    }
+
+    /* Presenter Notes Overlay (Toggle via 'N' key) */
+    .notes-drawer {
+      position: fixed;
+      bottom: 64px;
+      left: 40px;
+      right: 40px;
+      max-height: 200px;
+      background: rgba(2, 6, 23, 0.95);
+      border: 1px solid var(--cyan-bright);
+      box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.8);
+      border-radius: 12px;
+      padding: 18px 24px;
+      z-index: 100;
+      transform: translateY(120%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .notes-drawer.open {
+      transform: translateY(0);
+    }
+
+    .notes-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--cyan-bright);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 6px;
+    }
+
+    .notes-body {
+      font-size: 0.95rem;
+      color: #cbd5e1;
+      line-height: 1.5;
+      overflow-y: auto;
+    }
+
+    /* Print styles for PDF generation */
+    @media print {
+      body {
+        overflow: visible;
+        background: #070a13;
+      }
+      .bg-grid, .top-bar, .bottom-bar, .notes-drawer {
+        display: none !important;
+      }
+      .deck-container {
+        display: block;
+        height: auto;
+      }
+      .slide-viewport {
+        width: 100%;
+        height: auto;
+      }
+      .slide {
+        position: relative !important;
+        opacity: 1 !important;
+        transform: none !important;
+        page-break-after: always;
+        height: 100vh;
+        margin-bottom: 40px;
+        border: 1px solid #334155;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Ambient Grid Background -->
+  <div class="bg-grid"></div>
+
+  <!-- Deck Shell -->
+  <div class="deck-container">
+
+    <!-- Top Status Bar -->
+    <header class="top-bar">
+      <div class="brand-pill">
+        <div class="brand-logo-mark">
+          <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <span class="brand-title">DEVSCOUT</span>
+        <span class="brand-tag">V2.0 HACKATHON</span>
+      </div>
+      <div class="team-credit">
+        DEVELOPED BY <strong>KRIVA-NEXORBIT</strong>
+      </div>
+    </header>
+
+    <!-- Slide Viewport (Center Stage) -->
+    <main class="slide-viewport">
+
+      <!-- ================= SLIDE 1: COVER ================= -->
+      <section class="slide active" id="slide-1" data-notes="Welcome judges and developers. We are KRIVA-NEXORBIT presenting DEVSCOUT V2. Modern AI has transformed code generation into an instant commodity, but it created an alarming unintended side-effect: developers build without understanding. DEVSCOUT is our answer: an evidence-backed learning and guided-building platform built on a simple promise: Learn While You Build.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">Hackathon Pitch Deck • KRIVA-NEXORBIT</div>
+            <div class="slide-title">DEVSCOUT <span class="v2">V2</span></div>
+            <div class="slide-subtitle">Evidence-backed developer learning & guided building platform</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 01 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="slide-cover">
+            <div class="cover-left">
+              <div class="cover-badge-row">
+                <span class="badge-hackathon">Strategic Pivot</span>
+                <span class="badge-pivot">Learning First</span>
+              </div>
+              <div class="cover-tagline">“Learn While You Build.”</div>
+              <p class="cover-desc">
+                Moving developers from passive code copy-pasting to deep architectural comprehension. We turn real documentation, repositories, and engineering discussions into guided building experiences.
+              </p>
+              <div class="cover-meta">
+                <div class="meta-item">
+                  <span class="meta-label">Team</span>
+                  <span class="meta-value" style="color: var(--cyan-bright);">KRIVA-NEXORBIT</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Domain</span>
+                  <span class="meta-value">Developer Intelligence</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Core Ethos</span>
+                  <span class="meta-value">Understanding &gt; Generation</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="cover-visual">
+              <div class="transformation-art">
+                <svg viewBox="0 0 440 380" style="width: 100%; height: 100%;">
+                  <defs>
+                    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#38bdf8"/>
+                      <stop offset="100%" stop-color="#2563eb"/>
+                    </linearGradient>
+                    <radialGradient id="glowPulse" cx="50%" cy="50%" r="50%">
+                      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.3"/>
+                      <stop offset="100%" stop-color="#070a13" stop-opacity="0"/>
+                    </radialGradient>
+                  </defs>
+                  <!-- Central glow -->
+                  <circle cx="220" cy="190" r="160" fill="url(#glowPulse)"/>
+                  
+                  <!-- Left: Uncertainty Node -->
+                  <rect x="30" y="145" width="100" height="90" rx="10" fill="#0f172a" stroke="rgba(244,63,94,0.4)" stroke-width="1.5"/>
+                  <text x="80" y="180" font-family="Space Grotesk" font-size="12" fill="#fb7185" text-anchor="middle" font-weight="700">UNCERTAINTY</text>
+                  <text x="80" y="202" font-family="JetBrains Mono" font-size="10" fill="#94a3b8" text-anchor="middle">Black-box Code</text>
+
+                  <!-- Dynamic flow lines -->
+                  <path d="M 130 190 C 170 190, 180 140, 220 140 C 260 140, 270 190, 310 190" fill="none" stroke="url(#cyanGrad)" stroke-width="2.5" stroke-dasharray="4,4"/>
+                  <path d="M 130 190 C 170 190, 180 240, 220 240 C 260 240, 270 190, 310 190" fill="none" stroke="rgba(56,189,248,0.4)" stroke-width="1.5"/>
+
+                  <!-- Center: DEVSCOUT Engine Node -->
+                  <polygon points="220,110 270,190 220,270 170,190" fill="rgba(15,23,42,0.95)" stroke="#38bdf8" stroke-width="2"/>
+                  <circle cx="220" cy="190" r="28" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+                  <text x="220" y="195" font-family="Space Grotesk" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">SCOUT</text>
+
+                  <!-- Orbiting Source Anchors -->
+                  <circle cx="220" cy="70" r="14" fill="#0f172a" stroke="rgba(56,189,248,0.6)"/>
+                  <text x="220" y="74" font-family="JetBrains Mono" font-size="8" fill="#38bdf8" text-anchor="middle">DOCS</text>
+                  <circle cx="220" cy="310" r="14" fill="#0f172a" stroke="rgba(56,189,248,0.6)"/>
+                  <text x="220" y="314" font-family="JetBrains Mono" font-size="8" fill="#38bdf8" text-anchor="middle">REPOS</text>
+
+                  <!-- Right: Understanding & Creation Node -->
+                  <rect x="310" y="145" width="110" height="90" rx="10" fill="#0f172a" stroke="rgba(56,189,248,0.7)" stroke-width="1.5"/>
+                  <text x="365" y="180" font-family="Space Grotesk" font-size="12" fill="#38bdf8" text-anchor="middle" font-weight="700">UNDERSTANDING</text>
+                  <text x="365" y="202" font-family="JetBrains Mono" font-size="10" fill="#10b981" text-anchor="middle">Capable Builder</text>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            DEVSCOUT V2 Architecture • KRIVA-NEXORBIT
+          </div>
+          <div>Keyboard Navigation: Use <span class="kbd">←</span> <span class="kbd">→</span> or <span class="kbd">Space</span></div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 2: THE PROBLEM ================= -->
+      <section class="slide" id="slide-2" data-notes="Slide 2 presents the core paradox. Code has never been easier to produce. With a prompt, you get 200 lines of code in seconds. But what happens to the developer? The developer is stuck staring at code they cannot debug, cannot explain, and cannot confidently modify. Syntax appears instantly, while architectural comprehension remains zero.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">The Developer Paradox</div>
+            <div class="slide-title">Instant Code. <span class="accent-crimson">Zero Comprehension.</span></div>
+            <div class="slide-subtitle">AI copylot tools generate answers instantly, but leave beginners unable to understand, debug, or evolve their systems.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 02 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="problem-grid">
+            <!-- Outcome 1 -->
+            <div class="problem-card card-illusion">
+              <div>
+                <div class="problem-card-badge badge-red">
+                  <span>●</span> OUTCOME A: WHAT MODERN TOOLS DELIVER
+                </div>
+                <div class="problem-headline">Copied Output in 3 Seconds</div>
+                <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.5;">
+                  A full authentication file or microservice skeleton is dumped directly into the editor. It runs once, but the learner has no concept of what happened.
+                </p>
+              </div>
+
+              <div class="visual-contrast-box">
+                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                  <span style="font-family:var(--font-mono); font-size:0.75rem; color:#f43f5e;">generated_auth.py</span>
+                  <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--text-dim);">instant dump</span>
+                </div>
+                <div style="font-family:var(--font-mono); font-size:0.78rem; line-height:1.6; color:#94a3b8;">
+                  <div><span style="color:#f43f5e;">def</span> <span style="color:#38bdf8;">authenticate_jwt</span>(token: <span style="color:#60a5fa;">str</span>):</div>
+                  <div style="padding-left:14px; color:#64748b;"># 200 lines of unverified cryptography</div>
+                  <div style="padding-left:14px; color:#64748b;"># No explanation of token expiry or signing</div>
+                  <div style="padding-left:14px;"><span style="color:#fb7185;">return</span> decode(token, SECRET_KEY)</div>
+                </div>
+              </div>
+
+              <div style="display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:0.8rem; color:#fb7185;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                Developer Role: Passive Copy-Paster
+              </div>
+            </div>
+
+            <!-- Outcome 2 -->
+            <div class="problem-card card-reality">
+              <div>
+                <div class="problem-card-badge badge-blue">
+                  <span>●</span> OUTCOME B: THE IMMEDIATE FAILURE MODE
+                </div>
+                <div class="problem-headline">Fragile Confidence &amp; Roadblocks</div>
+                <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.5;">
+                  The moment a bug strikes or requirements shift, the developer is paralyzed. Without understanding trade-offs, security implications, or underlying APIs, they cannot adapt.
+                </p>
+              </div>
+
+              <div class="visual-contrast-box" style="align-items:center; text-align:center;">
+                <div style="width: 100%; display: flex; justify-content: space-around; margin-bottom: 12px;">
+                  <div style="display:flex; flex-direction:column; align-items:center;">
+                    <span style="font-size:1.8rem; color:#f43f5e;">✕</span>
+                    <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-muted);">Trade-off Literacy</span>
+                  </div>
+                  <div style="display:flex; flex-direction:column; align-items:center;">
+                    <span style="font-size:1.8rem; color:#f43f5e;">✕</span>
+                    <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-muted);">Source Grounding</span>
+                  </div>
+                  <div style="display:flex; flex-direction:column; align-items:center;">
+                    <span style="font-size:1.8rem; color:#f43f5e;">✕</span>
+                    <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-muted);">Debug Autonomy</span>
+                  </div>
+                </div>
+                <div style="font-size:0.85rem; color:var(--text-dim); line-height:1.4;">
+                  “When AI does all the reasoning, the human learns nothing.”
+                </div>
+              </div>
+
+              <div style="display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:0.8rem; color:var(--cyan-bright);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                The Goal: Build capable developers, not dependent users.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Metaphor: The code on screen has grown faster than the mental model behind it.</div>
+          <div>Problem Statement</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 3: THE PIVOT ================= -->
+      <section class="slide" id="slide-3" data-notes="Slide 3 explains our strategic evolution. DEVSCOUT originally began as a 9-stage technical decision intelligence report generator. But we realized decision reports alone don't solve the real problem: junior developers don't just need a verdict, they need to build real projects and understand how systems work. So we pivoted completely: from decision reporting to evidence-backed learning and guided building.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">Strategic Evolution</div>
+            <div class="slide-title">The DEVSCOUT Pivot: <span class="accent-cyan">Building Understanding</span></div>
+            <div class="slide-subtitle">We shifted our core from generating static technical decision reports to guiding real-world project construction.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 03 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="pivot-container">
+            <!-- BEFORE -->
+            <div class="pivot-column pivot-before">
+              <div>
+                <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.12em;">ORIGINAL FOCUS</span>
+                <div style="font-family:var(--font-heading); font-size:1.35rem; font-weight:700; color:#cbd5e1; margin:8px 0 12px;">Technical Decision Intelligence</div>
+                <p style="font-size:0.88rem; color:var(--text-dim); line-height:1.5;">
+                  Comparing options (e.g., PostgreSQL vs MongoDB) to output an analytical verdict and comparative matrices.
+                </p>
+              </div>
+
+              <div style="background:rgba(0,0,0,0.3); border-radius:8px; padding:14px; margin:16px 0;">
+                <div style="font-family:var(--font-mono); font-size:0.75rem; color:#64748b; margin-bottom:6px;">Limitation:</div>
+                <div style="font-size:0.85rem; color:#94a3b8; line-height:1.4;">
+                  A decision report tells you what tool to pick, but leaves you stranded when you sit down to implement it.
+                </div>
+              </div>
+
+              <div style="font-family:var(--font-mono); font-size:0.78rem; color:var(--text-dim);">
+                Status: Superseded by V2
+              </div>
+            </div>
+
+            <!-- TRANSITION ARROW -->
+            <div class="pivot-divider">
+              <div class="pivot-arrow-circle">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </div>
+              <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--cyan-bright); letter-spacing:0.1em;">PIVOT</span>
+            </div>
+
+            <!-- AFTER -->
+            <div class="pivot-column pivot-after">
+              <div>
+                <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--cyan-bright); text-transform:uppercase; letter-spacing:0.12em;">NEW DIRECTION • V2</span>
+                <div style="font-family:var(--font-heading); font-size:1.75rem; font-weight:700; color:#fff; margin:8px 0 12px;">Evidence-Backed Guided Building</div>
+                <p style="font-size:0.95rem; color:#cbd5e1; line-height:1.6;">
+                  An active companion that pairs real engineering evidence with structured milestones, conceptual explanations, and verified implementation gates.
+                </p>
+              </div>
+
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0;">
+                <div style="background:rgba(2,6,23,0.7); border:1px solid rgba(56,189,248,0.2); border-radius:8px; padding:12px;">
+                  <div style="font-family:var(--font-mono); font-size:0.72rem; color:var(--cyan-bright);">PRIMARY SHIFT</div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff; margin-top:4px;">From Static Report to Active Journey</div>
+                </div>
+                <div style="background:rgba(2,6,23,0.7); border:1px solid rgba(56,189,248,0.2); border-radius:8px; padding:12px;">
+                  <div style="font-family:var(--font-mono); font-size:0.72rem; color:var(--cyan-bright);">EVIDENCE CORE</div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff; margin-top:4px;">Grounded in Real Repos &amp; Docs</div>
+                </div>
+              </div>
+
+              <div style="display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:0.82rem; color:var(--cyan-bright);">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                The North Star: “Learn while you build real projects.”
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Philosophy: Learning happens during implementation, not inside abstract essays.</div>
+          <div>Strategic Alignment</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 4: THE DEVSCOUT EXPERIENCE ================= -->
+      <section class="slide" id="slide-4" data-notes="Slide 4 outlines the three unified pillars of DEVSCOUT: LEARN, ANALYSE, and BUILD. Notice this is not a random collection of features. It is a continuous loop. You learn the concept through grounded references, you analyse the architectural trade-offs, and you build the solution with progressive readiness. Each stage reinforces the next.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">The Core Experience</div>
+            <div class="slide-title">The Three Pillars: <span class="accent-cyan">A Coherent Cycle</span></div>
+            <div class="slide-subtitle">Not disjointed capabilities, but a unified flywheel that transforms developer curiosity into shipping capability.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 04 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="pillars-grid">
+            <!-- PILLAR 1: LEARN -->
+            <div class="pillar-card">
+              <span class="pillar-number">01</span>
+              <div>
+                <div class="pillar-icon-box icon-learn">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                </div>
+                <div style="font-family:var(--font-heading); font-size:1.4rem; font-weight:700; color:#fff; margin-bottom:8px;">LEARN</div>
+                <p style="font-size:0.9rem; color:var(--text-muted); line-height:1.55;">
+                  Master foundational concepts through crystal-clear explanations anchored to verified source documents, official guides, and curated engineering blogs.
+                </p>
+              </div>
+              <div>
+                <div class="cycle-badge">
+                  <span>→</span> Grounds in Source Evidence
+                </div>
+              </div>
+            </div>
+
+            <!-- PILLAR 2: ANALYSE -->
+            <div class="pillar-card">
+              <span class="pillar-number">02</span>
+              <div>
+                <div class="pillar-icon-box icon-analyse">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+                </div>
+                <div style="font-family:var(--font-heading); font-size:1.4rem; font-weight:700; color:#fff; margin-bottom:8px;">ANALYSE</div>
+                <p style="font-size:0.9rem; color:var(--text-muted); line-height:1.55;">
+                  Evaluate architectural trade-offs, security implications, and real production pitfalls before writing a single line of application code.
+                </p>
+              </div>
+              <div>
+                <div class="cycle-badge" style="color:#60a5fa; border-color:rgba(96,165,250,0.3); background:rgba(37,99,235,0.08);">
+                  <span>→</span> Unpacks Real Trade-offs
+                </div>
+              </div>
+            </div>
+
+            <!-- PILLAR 3: BUILD -->
+            <div class="pillar-card">
+              <span class="pillar-number">03</span>
+              <div>
+                <div class="pillar-icon-box icon-build">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </div>
+                <div style="font-family:var(--font-heading); font-size:1.4rem; font-weight:700; color:#fff; margin-bottom:8px;">BUILD</div>
+                <p style="font-size:0.9rem; color:var(--text-muted); line-height:1.55;">
+                  Progress through structured implementation milestones with scaffolded guidance, verified checks, and purposeful code assistance.
+                </p>
+              </div>
+              <div>
+                <div class="cycle-badge" style="color:#fb7185; border-color:rgba(251,113,133,0.3); background:rgba(244,63,94,0.08);">
+                  <span>→</span> Ships with Comprehension
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">The Flywheel: Learn the concept → Analyse the trade-off → Build the project.</div>
+          <div>Pillars of DEVSCOUT</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 5: HOW IT WORKS PIPELINE ================= -->
+      <section class="slide" id="slide-5" data-notes="Slide 5 breaks down how DEVSCOUT actually works under the hood. It follows a clean pipeline: Developer Goal leads to Research across real sources: official docs, GitHub repos, engineering blogs, and community discussions. We review evidence freshness and provenance, explain core concepts, guide implementation step-by-step, verify understanding, and celebrate real progress.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">The Pipeline</div>
+            <div class="slide-title">How It Works: <span class="accent-cyan">From Goal to Verified Progress</span></div>
+            <div class="slide-subtitle">A transparent, evidence-grounded workflow replacing black-box hallucination with traceable source discovery.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 05 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="pipeline-wrapper">
+            <div class="pipeline-steps">
+              <!-- Step 1 -->
+              <div class="pipeline-step">
+                <span class="step-num">01</span>
+                <div class="step-title">Developer Goal</div>
+                <p class="step-desc">Captures project intent, tech stack, and user experience level.</p>
+              </div>
+
+              <!-- Step 2 -->
+              <div class="pipeline-step step-highlight">
+                <span class="step-num">02</span>
+                <div class="step-title">Research Sources</div>
+                <p class="step-desc">Discovers real docs, GitHub repos, blogs, and community threads.</p>
+              </div>
+
+              <!-- Step 3 -->
+              <div class="pipeline-step">
+                <span class="step-num">03</span>
+                <div class="step-title">Review Evidence</div>
+                <p class="step-desc">Checks provenance, freshness decay, and flags conflicting claims.</p>
+              </div>
+
+              <!-- Step 4 -->
+              <div class="pipeline-step">
+                <span class="step-num">04</span>
+                <div class="step-title">Explain Concepts</div>
+                <p class="step-desc">Breaks concepts into bite-sized mental models with real citations.</p>
+              </div>
+
+              <!-- Step 5 -->
+              <div class="pipeline-step step-highlight">
+                <span class="step-num">05</span>
+                <div class="step-title">Guided Building</div>
+                <p class="step-desc">Offers scaffolded milestones with deliberate code gating.</p>
+              </div>
+
+              <!-- Step 6 -->
+              <div class="pipeline-step">
+                <span class="step-num">06</span>
+                <div class="step-title">Verify &amp; Progress</div>
+                <p class="step-desc">Conducts understanding checks and unlocks full implementation.</p>
+              </div>
+            </div>
+
+            <!-- Example Source Categories Box -->
+            <div class="sources-row">
+              <div class="source-item">
+                <div class="source-dot" style="background:#38bdf8; box-shadow:0 0 8px #38bdf8;"></div>
+                <div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff;">Official Documentation</div>
+                  <div style="font-size:0.72rem; color:var(--text-dim); font-family:var(--font-mono);">FastAPI, MDN, Python Docs</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot" style="background:#2563eb; box-shadow:0 0 8px #2563eb;"></div>
+                <div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff;">GitHub Repositories</div>
+                  <div style="font-size:0.72rem; color:var(--text-dim); font-family:var(--font-mono);">Stars, READMEs, real code</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot" style="background:#10b981; box-shadow:0 0 8px #10b981;"></div>
+                <div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff;">Engineering Blogs</div>
+                  <div style="font-size:0.72rem; color:var(--text-dim); font-family:var(--font-mono);">Netflix, Uber, Cloudflare</div>
+                </div>
+              </div>
+              <div class="source-item">
+                <div class="source-dot" style="background:#fb7185; box-shadow:0 0 8px #fb7185;"></div>
+                <div>
+                  <div style="font-size:0.85rem; font-weight:600; color:#fff;">Community Discussions</div>
+                  <div style="font-size:0.72rem; color:var(--text-dim); font-family:var(--font-mono);">Stack Overflow, Reddit, GitHub Issues</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Traceability: Every explanation links back to real sources and content hashes.</div>
+          <div>Operational Pipeline</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 6: A REALISTIC USER JOURNEY ================= -->
+      <section class="slide" id="slide-6" data-notes="Slide 6 demonstrates the intended user experience with a real, concrete scenario: a beginner developer wanting to implement authentication in FastAPI. Instead of dumping a 150-line security script, DEVSCOUT guides them through discovery, explains why password hashing with bcrypt matters, scaffolds the endpoints, and tests their understanding before code unlock.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">Intended Product Experience</div>
+            <div class="slide-title">A Realistic Journey: <span class="accent-cyan">FastAPI Authentication</span></div>
+            <div class="slide-subtitle">How a beginner progresses from an ambiguous question to shipping a secure, understood authentication service.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 06 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="journey-timeline">
+            <!-- Phase 1 -->
+            <div class="journey-card">
+              <div>
+                <div class="journey-phase">PHASE 01 • INQUIRY</div>
+                <div class="journey-heading">Initial Question</div>
+                <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.45;">
+                  “How do I add user login to my FastAPI app with tokens?”
+                </p>
+              </div>
+
+              <div class="journey-visual-snippet">
+                <span style="color:var(--cyan-bright);">&gt; intent:</span> add_auth<br>
+                <span style="color:var(--text-dim);">&gt; stack:</span> FastAPI + JWT<br>
+                <span style="color:#fb7185;">&gt; gap:</span> token hashing &amp; expiry
+              </div>
+
+              <div style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">
+                Captures skill context &amp; goals
+              </div>
+            </div>
+
+            <!-- Phase 2 -->
+            <div class="journey-card">
+              <div>
+                <div class="journey-phase">PHASE 02 • DISCOVERY</div>
+                <div class="journey-heading">Source Grounding</div>
+                <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.45;">
+                  DEVSCOUT retrieves FastAPI OAuth2 docs, passlib GitHub README, and security blogs.
+                </p>
+              </div>
+
+              <div class="journey-visual-snippet">
+                <span style="color:#10b981;">✓</span> fastapi.tiangolo.com/tutorial/security<br>
+                <span style="color:#10b981;">✓</span> pyjwt repo (4.5k stars)<br>
+                <span style="color:var(--cyan-bright);">Hash:</span> sha256:7f9a2b...
+              </div>
+
+              <div style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">
+                Validated evidence collection
+              </div>
+            </div>
+
+            <!-- Phase 3 -->
+            <div class="journey-card">
+              <div>
+                <div class="journey-phase">PHASE 03 • CONCEPTS</div>
+                <div class="journey-heading">Trade-off Literacy</div>
+                <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.45;">
+                  Explains sessions vs JWT tokens, password hashing algorithms, and token expiration.
+                </p>
+              </div>
+
+              <div class="journey-visual-snippet">
+                <span style="color:#60a5fa;">Concept:</span> JWT is signed, not encrypted.<br>
+                <span style="color:#fb7185;">Security Note:</span> Never store passwords plain.<br>
+                <span style="color:var(--text-muted);">Prereq:</span> Understanding HTTP headers.
+              </div>
+
+              <div style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">
+                Mental model establishment
+              </div>
+            </div>
+
+            <!-- Phase 4 -->
+            <div class="journey-card">
+              <div>
+                <div class="journey-phase">PHASE 04 • PROGRESS</div>
+                <div class="journey-heading">Guided Building</div>
+                <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.45;">
+                  User attempts code, passes review check, and receives scaffolded implementation.
+                </p>
+              </div>
+
+              <div class="journey-visual-snippet" style="border-color:rgba(16,185,129,0.3);">
+                <span style="color:#10b981;">Gate Passed:</span> Readiness verified.<br>
+                <span style="color:#fff;">Outcome:</span> Working, understood auth.<br>
+                <span style="color:var(--cyan-bright);">Retained:</span> Core security concepts.
+              </div>
+
+              <div style="font-size:0.75rem; color:var(--emerald-accent); font-family:var(--font-mono);">
+                ✓ True comprehension achieved
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Illustrated as the intended product experience, guiding genuine developer understanding.</div>
+          <div>User Journey Map</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 7: THE DIFFERENTIATOR ================= -->
+      <section class="slide" id="slide-7" data-notes="Slide 7 presents our strongest technological and philosophical differentiator: the Readiness Workflow. In typical AI assistants, typing 'give me the full code' instantly dumps everything. In DEVSCOUT, an explicit request alone DOES NOT bypass the gate. Full code is only unlocked if the learner passes an understanding check, submits a structured attempt that passes deterministic review, or reaches the final build milestone.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">The Competitive Edge</div>
+            <div class="slide-title">The Differentiator: <span class="accent-cyan">Readiness-Gated Building</span></div>
+            <div class="slide-subtitle">Immediate code dumping creates cognitive debt. DEVSCOUT requires a deliberate readiness workflow.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 07 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="diff-grid">
+            <!-- Left: Standard Chatbots -->
+            <div class="diff-left">
+              <div>
+                <span style="font-family:var(--font-mono); font-size:0.75rem; color:#fb7185; text-transform:uppercase; letter-spacing:0.12em;">STANDARD AI COPILOTS</span>
+                <div style="font-family:var(--font-heading); font-size:1.35rem; font-weight:700; color:#fff; margin:8px 0 12px;">Unregulated Code Dumping</div>
+                <p style="font-size:0.88rem; color:var(--text-muted); line-height:1.5;">
+                  The user asks a question, and the tool unloads 100+ lines of code without verifying if the user understands syntax, safety, or architecture.
+                </p>
+              </div>
+
+              <div style="background:rgba(2,6,23,0.8); border:1px solid rgba(244,63,94,0.3); border-radius:8px; padding:14px;">
+                <div style="font-family:var(--font-mono); font-size:0.72rem; color:#fb7185; margin-bottom:4px;">Loophole:</div>
+                <div style="font-size:0.82rem; color:#94a3b8; line-height:1.4;">
+                  “Just give me the full code” → AI immediately surrenders full solution. Understanding is discarded.
+                </div>
+              </div>
+
+              <div style="font-family:var(--font-mono); font-size:0.78rem; color:#fb7185;">
+                Result: Illusory competence &amp; zero retention
+              </div>
+            </div>
+
+            <!-- Right: DEVSCOUT Gate -->
+            <div class="diff-right">
+              <div>
+                <span style="font-family:var(--font-mono); font-size:0.75rem; color:var(--cyan-bright); text-transform:uppercase; letter-spacing:0.12em;">DEVSCOUT V2 POLICY</span>
+                <div style="font-family:var(--font-heading); font-size:1.55rem; font-weight:700; color:#fff; margin:8px 0 12px;">Verified Readiness Workflow</div>
+                <p style="font-size:0.92rem; color:#cbd5e1; line-height:1.55;">
+                  Full-code generation is an earned milestone, not the default response. It follows strict deterministic validation.
+                </p>
+              </div>
+
+              <div class="readiness-criteria-list">
+                <div class="readiness-item">
+                  <div class="readiness-check-icon">✓</div>
+                  <div>
+                    <div style="font-size:0.85rem; font-weight:600; color:#fff;">Understanding Check Passed</div>
+                    <div style="font-size:0.75rem; color:var(--text-muted);">Learner answers conceptual questions about trade-offs and primitives.</div>
+                  </div>
+                </div>
+                <div class="readiness-item">
+                  <div class="readiness-check-icon">✓</div>
+                  <div>
+                    <div style="font-size:0.85rem; font-weight:600; color:#fff;">Deterministic Attempt Review</div>
+                    <div style="font-size:0.75rem; color:var(--text-muted);">AST checks for real control flow (loops, functions, conditionals) — not dummy literal assignments.</div>
+                  </div>
+                </div>
+                <div class="readiness-item">
+                  <div class="readiness-check-icon">✓</div>
+                  <div>
+                    <div style="font-size:0.85rem; font-weight:600; color:#fff;">Final Milestone Reached</div>
+                    <div style="font-size:0.75rem; color:var(--text-muted);">Learner completes intermediate scaffolds before full code assembly.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="banner-no-bypass">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                Explicit user prompt alone DOES NOT bypass the code gate.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Pedagogical Guardrail: Building cognitive muscle through intentional friction.</div>
+          <div>Readiness Policy</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 8: PROPOSED ARCHITECTURE ================= -->
+      <section class="slide" id="slide-8" data-notes="Slide 8 presents our proposed technology and evidence architecture. Notice how the LLM is positioned: it is strictly an explanation and reasoning component, NOT an unverified authority. All claims are grounded by the Research and Evidence Review layers. The pipeline moves from the Developer Workspace into Learning Orchestration, through real retrieval, into verified guidance.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">System Design</div>
+            <div class="slide-title">Proposed Architecture: <span class="accent-cyan">Evidence-First Orchestration</span></div>
+            <div class="slide-subtitle">The LLM serves as a reasoning and explanation engine — never as the self-validating source of truth.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 08 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="arch-container">
+            <div class="arch-flow-diagram">
+              <!-- Node 1 -->
+              <div class="arch-node">
+                <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--cyan-bright);">01 LAYER</span>
+                <div class="arch-node-title">Developer Workspace</div>
+                <div class="arch-node-sub">Web UI / REST client capturing developer goals and skill profile.</div>
+              </div>
+
+              <!-- Node 2 -->
+              <div class="arch-node node-highlight">
+                <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--cyan-bright);">02 LAYER</span>
+                <div class="arch-node-title">Learning Orchestration</div>
+                <div class="arch-node-sub">FastAPI pipeline managing milestones, state, and gate transitions.</div>
+              </div>
+
+              <!-- Node 3 -->
+              <div class="arch-node">
+                <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--cyan-bright);">03 LAYER</span>
+                <div class="arch-node-title">Research &amp; Retrieval</div>
+                <div class="arch-node-sub">Connectors querying GitHub API, docs, blogs, and community threads.</div>
+              </div>
+
+              <!-- Node 4 -->
+              <div class="arch-node">
+                <span style="font-family:var(--font-mono); font-size:0.7rem; color:var(--cyan-bright);">04 LAYER</span>
+                <div class="arch-node-title">Evidence Review</div>
+                <div class="arch-node-sub">Content hashing (SHA-256), time decay scoring, and conflict checks.</div>
+              </div>
+
+              <!-- Node 5 -->
+              <div class="arch-node node-llm">
+                <span style="font-family:var(--font-mono); font-size:0.7rem; color:#fb7185;">05 LAYER</span>
+                <div class="arch-node-title">Explanation &amp; Guidance</div>
+                <div class="arch-node-sub">LLM as teacher &amp; coach, generating grounded mental models.</div>
+              </div>
+            </div>
+
+            <!-- Callout on LLM Authority -->
+            <div class="arch-warning-callout">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fb7185" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div>
+                <div style="font-family:var(--font-heading); font-size:0.95rem; font-weight:700; color:#fff;">Architectural Principle: AI is Not the Source of Truth</div>
+                <div style="font-size:0.82rem; color:#cbd5e1; margin-top:2px;">
+                  We do not assume an AI statement is true because the model says so. Claims are verified against retrieved evidence and real code repositories before being presented.
+                </div>
+              </div>
+            </div>
+
+            <div style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-dim); text-align:right;">
+              Proposed system architecture grounded in Python 3.12, FastAPI, and Pydantic v2.
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Separation of Concerns: Retrieval grounds truth; LLM articulates understanding.</div>
+          <div>Technical Architecture</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 9: HACKATHON MVP ================= -->
+      <section class="slide" id="slide-9" data-notes="Slide 9 grounds our pitch in real execution. Here is our focused Hackathon MVP. We are not making unrealistic claims about having completed everything. For the hackathon, we built: research-backed explanations with references, a guided implementation for a practical learning journey, basic understanding checks, and the deterministic code-readiness gate. This is a working foundation, ready to grow.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">Execution Reality</div>
+            <div class="slide-title">The Hackathon MVP: <span class="accent-cyan">Focused &amp; Realized</span></div>
+            <div class="slide-subtitle">Clear boundaries between what is implemented today and our future platform roadmap.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 09 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="mvp-grid">
+            <!-- Left: MVP Features (Built & Working) -->
+            <div>
+              <div style="font-family:var(--font-mono); font-size:0.78rem; color:var(--cyan-bright); margin-bottom:12px; letter-spacing:0.1em; text-transform:uppercase;">
+                DELIVERED FOR HACKATHON
+              </div>
+              <div class="mvp-features">
+                <div class="mvp-feat-card">
+                  <div>
+                    <div style="font-size:1.1rem; color:var(--cyan-bright); margin-bottom:6px;">01</div>
+                    <div style="font-family:var(--font-heading); font-size:0.95rem; font-weight:700; color:#fff;">Research-Backed Explanations</div>
+                  </div>
+                  <div style="font-size:0.78rem; color:var(--text-muted); margin-top:8px;">
+                    Async GitHub connector fetching live repositories and READMEs with SHA-256 hashes.
+                  </div>
+                </div>
+
+                <div class="mvp-feat-card">
+                  <div>
+                    <div style="font-size:1.1rem; color:var(--cyan-bright); margin-bottom:6px;">02</div>
+                    <div style="font-family:var(--font-heading); font-size:0.95rem; font-weight:700; color:#fff;">Guided Learning Journey</div>
+                  </div>
+                  <div style="font-size:0.78rem; color:var(--text-muted); margin-top:8px;">
+                    One end-to-end practical journey breaking down authentication and token flows.
+                  </div>
+                </div>
+
+                <div class="mvp-feat-card">
+                  <div>
+                    <div style="font-size:1.1rem; color:var(--cyan-bright); margin-bottom:6px;">03</div>
+                    <div style="font-family:var(--font-heading); font-size:0.95rem; font-weight:700; color:#fff;">Basic Understanding Checks</div>
+                  </div>
+                  <div style="font-size:0.78rem; color:var(--text-muted); margin-top:8px;">
+                    Structured quiz &amp; concept checks validating mental models prior to code access.
+                  </div>
+                </div>
+
+                <div class="mvp-feat-card">
+                  <div>
+                    <div style="font-size:1.1rem; color:var(--cyan-bright); margin-bottom:6px;">04</div>
+                    <div style="font-family:var(--font-heading); font-size:0.95rem; font-weight:700; color:#fff;">Deterministic Code Gate</div>
+                  </div>
+                  <div style="font-size:0.78rem; color:var(--text-muted); margin-top:8px;">
+                    AST-level structural validation rejecting trivial code and anti-cheat copy-pastes.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Future Vision (Honest Distinction) -->
+            <div class="mvp-vision-column">
+              <div>
+                <div style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:12px;">
+                  FUTURE PLATFORM AMBITIONS
+                </div>
+                <div style="display:flex; flex-direction:column; gap:14px;">
+                  <div style="display:flex; gap:10px; align-items:flex-start;">
+                    <span style="color:var(--text-dim); font-family:var(--font-mono); font-size:0.75rem;">[+]</span>
+                    <div>
+                      <div style="font-size:0.85rem; font-weight:600; color:#cbd5e1;">Multi-Connector Research Engine</div>
+                      <div style="font-size:0.75rem; color:var(--text-dim);">Live ingestion from StackOverflow, Reddit, and official docs.</div>
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:10px; align-items:flex-start;">
+                    <span style="color:var(--text-dim); font-family:var(--font-mono); font-size:0.75rem;">[+]</span>
+                    <div>
+                      <div style="font-size:0.85rem; font-weight:600; color:#cbd5e1;">IDE Native Extensions</div>
+                      <div style="font-size:0.75rem; color:var(--text-dim);">Inline readiness checks right within VS Code and Cursor.</div>
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:10px; align-items:flex-start;">
+                    <span style="color:var(--text-dim); font-family:var(--font-mono); font-size:0.75rem;">[+]</span>
+                    <div>
+                      <div style="font-size:0.85rem; font-weight:600; color:#cbd5e1;">Adaptive Developer Memory</div>
+                      <div style="font-size:0.75rem; color:var(--text-dim);">Cross-project tracking of mastered concepts and knowledge gaps.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="padding-top:14px; border-top:1px solid rgba(255,255,255,0.08); font-family:var(--font-mono); font-size:0.75rem; color:var(--cyan-bright);">
+                Realistic, focused hackathon scope with clean technical foundations.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Engineering Integrity: High clarity on what is built versus planned.</div>
+          <div>MVP Scope</div>
+        </div>
+      </section>
+
+
+      <!-- ================= SLIDE 10: CLOSING ================= -->
+      <section class="slide" id="slide-10" data-notes="Slide 10 is our closing. DEVSCOUT connects knowledge, code, and developer growth. In an era where AI makes code effortless, the real differentiator of the future is understanding what you build. Thank you judges. We are KRIVA-NEXORBIT and we welcome your questions.">
+        <div class="slide-header">
+          <div>
+            <div class="slide-eyebrow">The Future of Developer Growth</div>
+            <div class="slide-title">DEVSCOUT: <span class="accent-cyan">Learn While You Build</span></div>
+            <div class="slide-subtitle">Empowering the next generation of software engineers to build with genuine understanding.</div>
+          </div>
+          <div class="slide-meta-badge">SLIDE 10 / 10</div>
+        </div>
+
+        <div class="slide-body">
+          <div class="closing-container">
+            <div class="closing-left">
+              <div class="closing-quote">
+                “In the age of AI code generation, <span class="gradient">deep understanding</span> is the real competitive advantage.”
+              </div>
+              <p style="font-size:1.05rem; color:var(--text-muted); line-height:1.6;">
+                DEVSCOUT bridges the chasm between instant code and lasting knowledge. We help developers learn concepts, evaluate trade-offs, research grounded sources, and ship real projects with confidence.
+              </p>
+
+              <div class="closing-triad">
+                <div class="triad-box">
+                  <div class="val" style="color:var(--cyan-bright);">KNOWLEDGE</div>
+                  <div class="lbl">Source Grounded</div>
+                </div>
+                <div class="triad-box">
+                  <div class="val" style="color:#60a5fa;">CODE</div>
+                  <div class="lbl">Readiness Gated</div>
+                </div>
+                <div class="triad-box">
+                  <div class="val" style="color:#10b981;">GROWTH</div>
+                  <div class="lbl">Capable Builders</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Closing Artwork -->
+            <div style="height:100%; display:flex; align-items:center; justify-content:center;">
+              <div style="background:rgba(15,23,42,0.6); border:1px solid rgba(56,189,248,0.25); border-radius:20px; padding:36px; width:100%; text-align:center; box-shadow:0 0 50px rgba(56,189,248,0.08);">
+                <div style="width:64px; height:64px; margin:0 auto 16px; background:linear-gradient(135deg, var(--blue-royal), var(--cyan-bright)); border-radius:14px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 25px var(--cyan-glow);">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="#fff"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                </div>
+                <div style="font-family:var(--font-heading); font-size:2rem; font-weight:800; color:#fff;">DEVSCOUT</div>
+                <div style="font-family:var(--font-heading); font-size:1.1rem; color:var(--cyan-bright); margin-top:4px;">Learn While You Build.</div>
+                
+                <div style="margin:24px 0; height:1px; background:rgba(255,255,255,0.08);"></div>
+                
+                <div style="font-family:var(--font-mono); font-size:0.78rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.12em;">PRESENTED BY</div>
+                <div style="font-family:var(--font-heading); font-size:1.35rem; font-weight:700; color:#fff; margin-top:4px; letter-spacing:0.04em;">KRIVA-NEXORBIT</div>
+                
+                <div style="margin-top:20px; display:flex; justify-content:center; gap:8px;">
+                  <span class="badge-hackathon" style="font-size:0.7rem;">Hackathon 2026</span>
+                  <span class="badge-pivot" style="font-size:0.7rem;">Open for Q&amp;A</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="slide-footer">
+          <div class="footer-principle">Thank You • Team KRIVA-NEXORBIT</div>
+          <div>Conclusion &amp; Questions</div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Bottom Navigation Bar -->
+    <footer class="bottom-bar">
+      <div class="progress-container">
+        <div class="slide-counter">
+          Slide <strong id="current-slide-num">1</strong> of <strong>10</strong>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+      </div>
+
+      <div class="nav-controls">
+        <button class="btn-nav" id="btn-prev" title="Previous Slide (← / Up / PgUp)" aria-label="Previous Slide">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <button class="btn-nav" id="btn-next" title="Next Slide (→ / Down / Space / PgDn)" aria-label="Next Slide">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <button class="btn-nav" id="btn-notes" title="Toggle Presenter Notes (N)" aria-label="Toggle Notes">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </button>
+        <button class="btn-nav" id="btn-fullscreen" title="Toggle Fullscreen (F)" aria-label="Toggle Fullscreen">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+        <div class="nav-hint">
+          <span>Notes <span class="kbd">N</span></span>
+          <span>Full <span class="kbd">F</span></span>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Presenter Notes Drawer -->
+    <div class="notes-drawer" id="notes-drawer">
+      <div class="notes-header">
+        <span>Presenter Speaker Notes (Slide <span id="notes-slide-num">1</span>)</span>
+        <span style="cursor:pointer;" id="close-notes">✕ Close [N]</span>
+      </div>
+      <div class="notes-body" id="notes-content">
+        Loading notes...
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Interactive Slide Navigation Script -->
+  <script>
+    (function() {
+      const slides = document.querySelectorAll('.slide');
+      const totalSlides = slides.length;
+      let currentSlide = 0;
+
+      const currentNumEl = document.getElementById('current-slide-num');
+      const progressBar = document.getElementById('progress-bar');
+      const btnPrev = document.getElementById('btn-prev');
+      const btnNext = document.getElementById('btn-next');
+      const btnNotes = document.getElementById('btn-notes');
+      const btnFullscreen = document.getElementById('btn-fullscreen');
+      const notesDrawer = document.getElementById('notes-drawer');
+      const notesContent = document.getElementById('notes-content');
+      const notesSlideNum = document.getElementById('notes-slide-num');
+      const closeNotes = document.getElementById('close-notes');
+
+      function updateSlide(index) {
+        if (index < 0) index = 0;
+        if (index >= totalSlides) index = totalSlides - 1;
+
+        slides.forEach((slide, i) => {
+          if (i === index) {
+            slide.classList.add('active');
+          } else {
+            slide.classList.remove('active');
+          }
+        });
+
+        currentSlide = index;
+        currentNumEl.textContent = currentSlide + 1;
+        progressBar.style.width = `${((currentSlide + 1) / totalSlides) * 100}%`;
+
+        btnPrev.disabled = currentSlide === 0;
+        btnNext.disabled = currentSlide === totalSlides - 1;
+
+        // Update speaker notes
+        const activeSlide = slides[currentSlide];
+        const notes = activeSlide.getAttribute('data-notes') || 'No speaker notes for this slide.';
+        notesContent.textContent = notes;
+        notesSlideNum.textContent = currentSlide + 1;
+
+        // Update URL hash
+        window.location.hash = `#slide-${currentSlide + 1}`;
+      }
+
+      function nextSlide() {
+        if (currentSlide < totalSlides - 1) {
+          updateSlide(currentSlide + 1);
+        }
+      }
+
+      function prevSlide() {
+        if (currentSlide > 0) {
+          updateSlide(currentSlide - 1);
+        }
+      }
+
+      function toggleNotes() {
+        notesDrawer.classList.toggle('open');
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else {
+          if (document.exitFullscreen) {
+            document.exitFullscreen();
+          }
+        }
+      }
+
+      // Event Listeners
+      btnNext.addEventListener('click', nextSlide);
+      btnPrev.addEventListener('click', prevSlide);
+      btnNotes.addEventListener('click', toggleNotes);
+      closeNotes.addEventListener('click', toggleNotes);
+      btnFullscreen.addEventListener('click', toggleFullscreen);
+
+      // Keyboard Controls
+      window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+        switch(e.key) {
+          case 'ArrowRight':
+          case 'ArrowDown':
+          case ' ':
+          case 'PageDown':
+            e.preventDefault();
+            nextSlide();
+            break;
+          case 'ArrowLeft':
+          case 'ArrowUp':
+          case 'PageUp':
+            e.preventDefault();
+            prevSlide();
+            break;
+          case 'n':
+          case 'N':
+            e.preventDefault();
+            toggleNotes();
+            break;
+          case 'f':
+          case 'F':
+            e.preventDefault();
+            toggleFullscreen();
+            break;
+          case 'Home':
+            e.preventDefault();
+            updateSlide(0);
+            break;
+          case 'End':
+            e.preventDefault();
+            updateSlide(totalSlides - 1);
+            break;
+        }
+      });
+
+      // Handle Initial Hash
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#slide-')) {
+        const target = parseInt(hash.replace('#slide-', ''), 10) - 1;
+        if (!isNaN(target) && target >= 0 && target < totalSlides) {
+          updateSlide(target);
+        } else {
+          updateSlide(0);
+        }
+      } else {
+        updateSlide(0);
+      }
+    })();
+  </script>
+</body>
+</html>
