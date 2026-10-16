@@ -265,6 +265,31 @@ class GeminiProvider:
         self._client = genai.Client(api_key=self.api_key)
         return self._client
 
+    def get_client(self) -> genai.Client:
+        """Return the underlying genai.Client instance."""
+        return self._get_client()
+
+    async def generate_with_search(
+        self, prompt: str, **kwargs: object
+    ) -> types.GenerateContentResponse:
+        """
+        Generate content using Gemini with Google Search tool enabled.
+        Plain text call only; does not use response_schema or JSON mode.
+        """
+        client = self._get_client()
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        )
+        try:
+            return await client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=config,
+            )
+        except Exception as exc:
+            raise _map_gemini_error(exc, self.model_name) from exc
+
+
     async def generate(
         self, prompt: str, system_prompt: str | None = None, **kwargs: object
     ) -> str:
