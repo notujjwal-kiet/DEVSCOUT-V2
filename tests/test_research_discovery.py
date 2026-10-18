@@ -10,6 +10,7 @@ Unit tests for app.research.discovery and app.research.web_fetch:
 - Source type hint inference across domains and paths
 - SSRF URL validation constraints
 """
+import socket
 from unittest.mock import AsyncMock
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from app.research.web_fetch import (
     SSRFError,
     WebFetchError,
     is_safe_url,
+    resolve_and_validate,
     resolve_redirects,
 )
 
@@ -267,3 +269,25 @@ async def test_resolve_redirects_blocks_ssrf_redirect_hop():
     async with httpx.AsyncClient(transport=transport) as client:
         with pytest.raises(SSRFError):
             await resolve_redirects("https://safe-domain.com/redirect", client=client)
+
+
+# ── 8. Mock DNS Resolver Network Isolation ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_mock_dns_resolver_prevents_network_and_respects_explicit_mock(monkeypatch):
+    """Verify autouse mock DNS returns fixed public IP without network and explicit mocks override it."""
+    # 1. Arbitrary test domain resolves to fixed public IP (93.184.216.34) without hitting network
+    resolved_ips = await resolve_and_validate("arbitrary-never-registered-domain-999.example")
+    assert len(resolved_ips) >= 1
+    assert str(resolved_ips[0]) == "93.184.216.34"
+
+    # 2. Test-level explicit mock overrides the default autouse fixture for private/blocked host testing
+    def explicit_private_dns(host, port=0, family=0, type=0, proto=0, flags=0):
+        if host == "custom-private-domain.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", port or 80))]
+        return socket.getaddrinfo(host, port, family, type, proto, flags)
+
+    monkeypatch.setattr(socket, "getaddrinfo", explicit_private_dns)
+
+    with pytest.raises(SSRFError, match="prohibited IP address"):
+        await resolve_and_validate("custom-private-domain.test")
