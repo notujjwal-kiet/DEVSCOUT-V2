@@ -13,7 +13,14 @@ from app.research.scoring import (
     reliability_score,
     score_document,
 )
-from app.research.web_fetch import SSRFError, WebFetchError, is_safe_url, resolve_redirects
+from app.research.web_fetch import (
+    SSRFError,
+    WebFetchError,
+    fetch_page,
+    is_safe_url,
+    resolve_and_validate,
+    resolve_redirects,
+)
 
 __all__ = [
     "DiscoveredSource",
@@ -25,11 +32,13 @@ __all__ = [
     "content_changed",
     "discover_sources",
     "evidence_score",
+    "fetch_page",
     "freshness_score",
     "hash_content",
     "is_safe_url",
     "normalize",
     "reliability_score",
+    "resolve_and_validate",
     "resolve_redirects",
     "score_document",
 ]
