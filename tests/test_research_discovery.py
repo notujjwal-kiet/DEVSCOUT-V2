@@ -10,6 +10,7 @@ Unit tests for app.research.discovery and app.research.web_fetch:
 - Source type hint inference across domains and paths
 - SSRF URL validation constraints
 """
+import asyncio
 import socket
 from unittest.mock import AsyncMock
 import httpx
@@ -19,9 +20,11 @@ from google.genai import types
 from app.llm.provider import GeminiProvider
 from app.models.pipeline import ResourceType
 from app.research.discovery import (
+    DISCOVERY_CONCURRENCY,
     DOMAIN_TYPE_MAPPING,
     discover_sources,
     infer_source_type_hint,
+    normalize_url,
 )
 from app.research.web_fetch import (
     SSRFError,
@@ -291,3 +294,125 @@ async def test_mock_dns_resolver_prevents_network_and_respects_explicit_mock(mon
 
     with pytest.raises(SSRFError, match="prohibited IP address"):
         await resolve_and_validate("custom-private-domain.test")
+
+
+# ── 9. URL Normalization and Deduplication ─────────────────────────────────────
+
+def test_normalize_url():
+    """Verify normalize_url strips fragments, tracking parameters, trailing slashes, and preserves path casing."""
+    # Strip fragment
+    assert normalize_url("https://example.com/page#overview") == "https://example.com/page"
+
+    # Strip tracking parameters (utm_*, gclid, fbclid) and preserve other query parameters
+    assert normalize_url("https://example.com/page?utm_source=google&q=search&gclid=123&fbclid=456&utm_campaign=spring") == "https://example.com/page?q=search"
+
+    # Strip trailing slash on path
+    assert normalize_url("https://example.com/docs/") == "https://example.com/docs"
+    assert normalize_url("https://example.com/") == "https://example.com"
+
+    # Do NOT lowercase path
+    assert normalize_url("https://example.com/MyDocs/GettingStarted/?utm_medium=email") == "https://example.com/MyDocs/GettingStarted"
+
+
+@pytest.mark.asyncio
+async def test_discover_sources_normalization_dedupe():
+    """Verify discovery dedupes on normalized URLs while preserving casing and original order."""
+    chunks = [
+        _make_web_chunk("https://example.com/Tutorial/?utm_source=twitter#section1", "Tutorial 1", "example.com"),
+        _make_web_chunk("https://example.com/Tutorial", "Tutorial Duplicate", "example.com"),
+        _make_web_chunk("https://example.com/Tutorial/?gclid=abc&fbclid=xyz", "Tutorial Tracker Duplicate", "example.com"),
+        _make_web_chunk("https://example.com/OtherPage", "Other", "example.com"),
+    ]
+    mock_resp = _make_mock_response(chunks)
+
+    provider = AsyncMock(spec=GeminiProvider)
+    provider.generate_with_search.return_value = mock_resp
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="OK")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sources = await discover_sources(
+            query="FastAPI",
+            max_results=5,
+            provider=provider,
+            http_client=client,
+        )
+
+    assert len(sources) == 2
+    assert sources[0].url == "https://example.com/Tutorial/?utm_source=twitter#section1"
+    assert sources[1].url == "https://example.com/OtherPage"
+
+
+@pytest.mark.asyncio
+async def test_discover_sources_403_kept_and_404_dropped():
+    """Verify that a source whose final endpoint returns 403 is kept while a 404 source is dropped."""
+    chunks = [
+        _make_web_chunk("https://example.com/bot-blocked", "Blocked Page", "example.com"),
+        _make_web_chunk("https://example.com/missing-404", "Missing Page", "example.com"),
+        _make_web_chunk("https://example.com/accessible", "Good Page", "example.com"),
+    ]
+    mock_resp = _make_mock_response(chunks)
+
+    provider = AsyncMock(spec=GeminiProvider)
+    provider.generate_with_search.return_value = mock_resp
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "/bot-blocked" in url_str:
+            return httpx.Response(403, text="Forbidden")
+        if "/missing-404" in url_str:
+            return httpx.Response(404, text="Not Found")
+        return httpx.Response(200, text="OK")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sources = await discover_sources(
+            query="test status filtering",
+            max_results=5,
+            provider=provider,
+            http_client=client,
+        )
+
+    assert len(sources) == 2
+    assert sources[0].url == "https://example.com/bot-blocked"
+    assert sources[1].url == "https://example.com/accessible"
+
+
+@pytest.mark.asyncio
+async def test_discover_sources_order_preserved_under_concurrency():
+    """Verify concurrent chunk resolution preserves original chunk ordering even with disparate response times."""
+    chunks = [
+        _make_web_chunk("https://example.com/slow", "Slow Page", "example.com"),
+        _make_web_chunk("https://example.com/fast1", "Fast 1", "example.com"),
+        _make_web_chunk("https://example.com/fast2", "Fast 2", "example.com"),
+        _make_web_chunk("https://example.com/medium", "Medium Page", "example.com"),
+    ]
+    mock_resp = _make_mock_response(chunks)
+
+    provider = AsyncMock(spec=GeminiProvider)
+    provider.generate_with_search.return_value = mock_resp
+
+    async def custom_handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "/slow" in url_str:
+            await asyncio.sleep(0.04)
+        elif "/medium" in url_str:
+            await asyncio.sleep(0.02)
+        return httpx.Response(200, text="OK")
+
+    transport = httpx.MockTransport(custom_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sources = await discover_sources(
+            query="concurrency ordering",
+            max_results=5,
+            provider=provider,
+            http_client=client,
+        )
+
+    assert len(sources) == 4
+    assert sources[0].url == "https://example.com/slow"
+    assert sources[1].url == "https://example.com/fast1"
+    assert sources[2].url == "https://example.com/fast2"
+    assert sources[3].url == "https://example.com/medium"

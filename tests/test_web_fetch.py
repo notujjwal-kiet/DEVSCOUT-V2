@@ -273,3 +273,97 @@ async def test_normal_page_parsed(monkeypatch):
     assert doc.last_updated == datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
     assert doc.resource.content_hash == hash_content(doc.text)
     assert doc.resource.retrieved_at is not None
+
+
+# ── 10. resolve_redirects Multi-hop and Status Tests ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_resolve_redirects_three_hops_succeeds():
+    """Verify a 3-hop redirect chain succeeds with max_redirects=3."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if url_str.endswith("/hop0"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop1"})
+        elif url_str.endswith("/hop1"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop2"})
+        elif url_str.endswith("/hop2"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop3"})
+        elif url_str.endswith("/hop3"):
+            return httpx.Response(200, text="Final Content")
+        return httpx.Response(404, text="Unknown")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        final_url = await resolve_redirects("http://example.com/hop0", max_redirects=3, client=client)
+
+    assert final_url == "http://example.com/hop3"
+
+
+@pytest.mark.asyncio
+async def test_resolve_redirects_four_hops_fails_max_redirects_three():
+    """Verify a 4-hop redirect chain raises WebFetchError when max_redirects=3."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if url_str.endswith("/hop0"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop1"})
+        elif url_str.endswith("/hop1"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop2"})
+        elif url_str.endswith("/hop2"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop3"})
+        elif url_str.endswith("/hop3"):
+            return httpx.Response(302, headers={"Location": "http://example.com/hop4"})
+        elif url_str.endswith("/hop4"):
+            return httpx.Response(200, text="Final Content")
+        return httpx.Response(404, text="Unknown")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(WebFetchError, match="Exceeded max redirects"):
+            await resolve_redirects("http://example.com/hop0", max_redirects=3, client=client)
+
+
+@pytest.mark.asyncio
+async def test_resolve_redirects_head_403_retries_get_200():
+    """Verify that if HEAD returns >= 400 (e.g. 403), it retries with GET and succeeds if GET returns 200."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "HEAD":
+            return httpx.Response(403, text="Forbidden HEAD")
+        if request.method == "GET":
+            return httpx.Response(200, text="OK GET")
+        return httpx.Response(405)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        final_url = await resolve_redirects("http://example.com/page", client=client)
+
+    assert final_url == "http://example.com/page"
+    assert calls == ["HEAD", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_redirects_final_403_401_429_kept():
+    """Verify that terminal 401, 403, or 429 returns the last SSRF-validated URL instead of raising."""
+    for status in (401, 403, 429):
+        def handler(request: httpx.Request, code=status) -> httpx.Response:
+            return httpx.Response(code, text="Blocked")
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            final_url = await resolve_redirects(f"http://example.com/status-{status}", client=client)
+        assert final_url == f"http://example.com/status-{status}"
+
+
+@pytest.mark.asyncio
+async def test_resolve_redirects_final_404_and_410_raise():
+    """Verify that terminal 404 and 410 raise WebFetchError."""
+    for status in (404, 410):
+        def handler(request: httpx.Request, code=status) -> httpx.Response:
+            return httpx.Response(code, text="Missing")
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(WebFetchError, match=f"HTTP {status}"):
+                await resolve_redirects(f"http://example.com/status-{status}", client=client)

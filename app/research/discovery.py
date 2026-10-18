@@ -8,6 +8,7 @@ and infers source type hints based on domain and path.
 """
 from __future__ import annotations
 
+import asyncio
 import urllib.parse
 
 import httpx
@@ -19,6 +20,8 @@ from app.research.models import DiscoveredSource
 from app.research.web_fetch import resolve_redirects
 
 logger = structlog.get_logger(__name__)
+
+DISCOVERY_CONCURRENCY: int = 4
 
 # ── Domain to ResourceType Mapping Configuration ──────────────────────────────
 
@@ -43,6 +46,38 @@ KNOWN_DOCS_DOMAINS: set[str] = {
     "nodejs.org",
     "peps.python.org",
 }
+
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL for deduplication:
+    - Strips fragment (#...)
+    - Strips tracking query parameters (utm_*, gclid, fbclid)
+    - Strips trailing slash on path (e.g. /path/ -> /path, / -> empty)
+    - Preserves path casing (does NOT lowercase path)
+    - Lowercases scheme and netloc (domain:port)
+    """
+    if not url or not url.strip():
+        return ""
+
+    parsed = urllib.parse.urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/") if parsed.path else ""
+
+    # Filter tracking query parameters
+    query_params: list[tuple[str, str]] = []
+    if parsed.query:
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            k_lower = k.lower()
+            if k_lower.startswith("utm_") or k_lower in ("gclid", "fbclid"):
+                continue
+            query_params.append((k, v))
+
+    query_params.sort(key=lambda item: item[0])
+    query = urllib.parse.urlencode(query_params)
+
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
 
 
 def infer_source_type_hint(url: str, domain: str) -> ResourceType:
@@ -92,9 +127,10 @@ async def discover_sources(
     Discover sources relevant to query using Gemini with Google Search grounding.
     - Plain text call with google_search tool (no JSON response_schema).
     - Extracts web URIs from grounding_metadata.grounding_chunks.
-    - Resolves redirect URIs safely against SSRF (max 3 hops).
+    - Resolves chunks concurrently using asyncio.gather with a semaphore of DISCOVERY_CONCURRENCY.
+    - Preserves original chunk order.
     - Drops failed redirect resolutions.
-    - Deduplicates by final URL while preserving order.
+    - Deduplicates on normalized URL (strips fragment, tracking params, trailing slash, keeps path casing).
     - Infers source_type_hint and caps results at max_results.
     - Returns [] and logs a warning on missing grounding metadata.
     """
@@ -119,9 +155,7 @@ async def discover_sources(
         logger.warning("No grounding metadata or chunks found in Gemini search response", query=query)
         return []
 
-    seen_urls: set[str] = set()
-    discovered: list[DiscoveredSource] = []
-
+    valid_items: list[tuple[object, str, str, str]] = []
     for chunk in chunks:
         web = getattr(chunk, "web", None)
         if web is None:
@@ -133,29 +167,50 @@ async def discover_sources(
 
         raw_title = getattr(web, "title", None) or ""
         fallback_domain = getattr(web, "domain", None) or ""
+        valid_items.append((chunk, raw_uri, raw_title, fallback_domain))
 
-        # Resolve redirect URIs safely against SSRF; drop source on resolution failure
-        try:
-            final_url = await resolve_redirects(
-                url=raw_uri,
-                max_redirects=3,
-                client=http_client,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to resolve search grounding URI, dropping source",
-                uri=raw_uri,
-                error=str(exc),
-            )
+    if not valid_items:
+        return []
+
+    # Resolve chunks concurrently with semaphore, preserving chunk order
+    sem = asyncio.Semaphore(DISCOVERY_CONCURRENCY)
+
+    async def _resolve_chunk(item: tuple[object, str, str, str]) -> tuple[tuple[object, str, str, str], str | None]:
+        _, raw_uri, _, _ = item
+        async with sem:
+            try:
+                final_url = await resolve_redirects(
+                    url=raw_uri,
+                    max_redirects=3,
+                    client=http_client,
+                )
+                return (item, final_url)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve search grounding URI, dropping source",
+                    uri=raw_uri,
+                    error=str(exc),
+                )
+                return (item, None)
+
+    resolved_items = await asyncio.gather(*[_resolve_chunk(item) for item in valid_items])
+
+    seen_normalized_urls: set[str] = set()
+    discovered: list[DiscoveredSource] = []
+
+    for item, final_url in resolved_items:
+        if final_url is None:
             continue
 
         cleaned_final_url = final_url.strip()
-        url_key = cleaned_final_url.lower()
+        norm_url = normalize_url(cleaned_final_url)
 
-        # Deduplicate by final URL while keeping order
-        if url_key in seen_urls:
+        # Deduplicate on normalized URL while keeping order
+        if norm_url in seen_normalized_urls:
             continue
-        seen_urls.add(url_key)
+        seen_normalized_urls.add(norm_url)
+
+        _, _, raw_title, fallback_domain = item
 
         # Extract domain
         parsed = urllib.parse.urlparse(cleaned_final_url)

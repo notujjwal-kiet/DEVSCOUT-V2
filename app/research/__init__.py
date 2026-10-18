@@ -1,7 +1,11 @@
 """
 Research and source discovery package for DEVSCOUT.
 """
-from app.research.discovery import discover_sources
+from app.research.discovery import (
+    DISCOVERY_CONCURRENCY,
+    discover_sources,
+    normalize_url,
+)
 from app.research.github import GitHubConnector
 from app.research.models import DiscoveredSource, ResearchDocument, ResearchError
 from app.research.scoring import (
@@ -23,6 +27,7 @@ from app.research.web_fetch import (
 )
 
 __all__ = [
+    "DISCOVERY_CONCURRENCY",
     "DiscoveredSource",
     "GitHubConnector",
     "ResearchDocument",
@@ -37,6 +42,7 @@ __all__ = [
     "hash_content",
     "is_safe_url",
     "normalize",
+    "normalize_url",
     "reliability_score",
     "resolve_and_validate",
     "resolve_redirects",

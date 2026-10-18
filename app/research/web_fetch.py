@@ -272,11 +272,12 @@ async def resolve_redirects(
     client: httpx.AsyncClient | None = None,
 ) -> str:
     """
-    Resolve potential redirect links step-by-step up to max_redirects.
+    Resolve potential redirect links step-by-step, following up to max_redirects hops.
     Validates initial URL and every redirect hop against resolve_and_validate.
-    Uses HEAD first, falling back to GET on 405 Method Not Allowed or transport failure.
-    Returns the final resolved URL string.
-    Raises SSRFError or WebFetchError on failure.
+    - Uses HEAD first; if HEAD returns any status >= 400 (or fails), retries once with GET before deciding.
+    - Follows up to max_redirects redirect hops.
+    - If the final response is 401/403/429, returns the last SSRF-validated URL instead of raising.
+    - Raises on network errors, 404, 410, or when hops exceed max_redirects.
     """
     await validate_url_ssrf_async(url)
 
@@ -290,16 +291,18 @@ async def resolve_redirects(
     active_client = client if client is not None else httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS)
 
     try:
-        for _ in range(max_redirects):
+        for hop in range(max_redirects + 1):
             await validate_url_ssrf_async(current_url)
 
             # Try HEAD first
             resp = None
             try:
                 resp = await active_client.head(current_url, headers=headers, follow_redirects=False)
-                if resp.status_code == 405:
-                    resp = await active_client.get(current_url, headers=headers, follow_redirects=False)
             except (httpx.RequestError, Exception):
+                resp = None
+
+            # If HEAD failed or returned any status >= 400, retry once with GET before deciding
+            if resp is None or resp.status_code >= 400:
                 try:
                     resp = await active_client.get(current_url, headers=headers, follow_redirects=False)
                 except Exception as exc:
@@ -308,22 +311,29 @@ async def resolve_redirects(
             if resp is None:
                 raise WebFetchError(f"No response received when resolving '{current_url}'")
 
-            # Check for redirect
+            # Check if this response is a redirect hop
             if 300 <= resp.status_code < 400 and "location" in resp.headers:
+                if hop >= max_redirects:
+                    raise WebFetchError(f"Exceeded max redirects ({max_redirects}) for '{url}'")
                 location = resp.headers["location"]
                 next_url = urllib.parse.urljoin(current_url, location)
                 await validate_url_ssrf_async(next_url)
                 current_url = next_url
-            elif resp.status_code < 400:
-                return current_url
-            else:
-                raise WebFetchError(f"HTTP error {resp.status_code} resolving '{current_url}'")
-        else:
-            if resp is not None and 300 <= resp.status_code < 400:
-                raise WebFetchError(f"Exceeded max redirects ({max_redirects}) for '{url}'")
+                continue
 
-        await validate_url_ssrf_async(current_url)
-        return current_url
+            # Terminal responses
+            if resp.status_code < 400:
+                return current_url
+
+            if resp.status_code in (401, 403, 429):
+                return current_url
+
+            if resp.status_code in (404, 410):
+                raise WebFetchError(f"Resource not found (HTTP {resp.status_code}) resolving '{current_url}'")
+
+            raise WebFetchError(f"HTTP error {resp.status_code} resolving '{current_url}'")
+
+        raise WebFetchError(f"Exceeded max redirects ({max_redirects}) for '{url}'")
     finally:
         if owns_client:
             await active_client.aclose()
