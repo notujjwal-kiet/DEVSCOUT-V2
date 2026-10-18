@@ -45,6 +45,7 @@ class _CandidateSource:
     url: str
     resource_type: ResourceType
     title: str = ""
+    topic: str = ""
 
 
 def _extract_topics(plan_result: IntentPlanResult) -> list[str]:
@@ -94,11 +95,11 @@ async def run(
     topics = _extract_topics(plan_result)
 
     # 1. Build 3 query strings (docs, GitHub examples, community) by template for each topic
-    discovery_queries: list[tuple[str, ResourceType]] = []
+    discovery_queries: list[tuple[str, ResourceType, str]] = []
     for topic in topics:
-        discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS))
-        discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO))
-        discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY))
+        discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
+        discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
+        discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
 
     owns_client = http_client is None
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)
@@ -109,7 +110,7 @@ async def run(
 
         discovery_sem = asyncio.Semaphore(concurrency)
 
-        async def _run_discover(q: str, rtype: ResourceType) -> list[_CandidateSource]:
+        async def _run_discover(q: str, rtype: ResourceType, topic: str) -> list[_CandidateSource]:
             async with discovery_sem:
                 try:
                     discovered = await discover_sources(
@@ -123,6 +124,7 @@ async def run(
                             url=ds.url,
                             resource_type=ds.source_type_hint or rtype,
                             title=ds.title,
+                            topic=topic,
                         )
                         for ds in discovered
                     ]
@@ -142,6 +144,7 @@ async def run(
                             url=doc.resource.url,
                             resource_type=ResourceType.REPO,
                             title=doc.resource.title,
+                            topic=topic,
                         )
                         for doc in gh_docs
                     ]
@@ -150,7 +153,7 @@ async def run(
                     return []
 
         # 2. Run discovery and GitHub queries concurrently bounded by semaphore
-        discovery_tasks = [_run_discover(q, rtype) for q, rtype in discovery_queries]
+        discovery_tasks = [_run_discover(q, rtype, topic) for q, rtype, topic in discovery_queries]
         github_tasks = [_run_github(topic) for topic in topics]
         all_gathered = await asyncio.gather(*discovery_tasks, *github_tasks)
 
@@ -204,6 +207,9 @@ async def run(
                     )
                     res = doc.resource
                     res.content_hash = hash_content(doc.text)
+                    res.last_updated = doc.last_updated
+                    res.popularity = doc.popularity
+                    res.topic = item.topic
                     # Do NOT score here; Stage 4 handles scoring
                     res.reliability = 0.0
                     res.freshness_score = 0.0

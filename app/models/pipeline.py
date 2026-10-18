@@ -148,6 +148,9 @@ class Resource(BaseModel):
     level_fit: ExperienceLevel = ExperienceLevel.BEGINNER
     uncertainty_flag: bool = False
     summary: str = ""
+    last_updated: datetime | None = None
+    popularity: int | None = None
+    topic: str | None = None
 
 
 # ── Stage 5 – Explanation & Concept Mapping ───────────────────────────────────
@@ -315,7 +318,13 @@ class EvidenceReviewResult(BaseModel):
     flagged_uncertainties: list[str] = Field(default_factory=list)
     needs_more_evidence: bool = False
     loop_count: int = 0
+    seen_urls: list[str] = Field(default_factory=list)
     metrics: StageMetrics | None = None
+
+    @property
+    def exclude_urls(self) -> list[str]:
+        """Convenience alias for orchestrator to pass seen_urls to Stage 3 exclude_urls."""
+        return self.seen_urls
 
 
 class ExplanationResult(BaseModel):
