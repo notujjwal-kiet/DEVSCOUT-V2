@@ -38,6 +38,64 @@ from app.pipeline import (
     stage8_decision_report,
     stage9_developer_feedback,
 )
+from app.models.pipeline import Resource, ResourceType
+from app.research.models import DiscoveredSource, ResearchDocument
+from datetime import UTC, datetime
+
+
+@pytest.fixture(autouse=True)
+def mock_stage3_research_dependencies(monkeypatch):
+    """Mock external discovery, github search, and web fetch in integration tests."""
+    async def mock_discover_sources(query, max_results=5, provider=None, http_client=None):
+        return [
+            DiscoveredSource(
+                url="https://docs.python.org/3/library/asyncio.html",
+                title="Python Asyncio Documentation",
+                domain="docs.python.org",
+                source_type_hint=ResourceType.DOCS,
+            ),
+            DiscoveredSource(
+                url="https://stackoverflow.com/questions/12345/rate-limiting",
+                title="Rate Limiting Gotchas",
+                domain="stackoverflow.com",
+                source_type_hint=ResourceType.COMMUNITY,
+            ),
+        ]
+
+    async def mock_search_repositories(self, query, limit=3):
+        return [
+            ResearchDocument(
+                resource=Resource(
+                    url="https://github.com/example/rate-limiter",
+                    type=ResourceType.REPO,
+                    title="example/rate-limiter",
+                    content_hash="repo123",
+                    retrieved_at=datetime.now(UTC),
+                ),
+                text="Example rate limiter README",
+                last_updated=datetime.now(UTC),
+                popularity=1500,
+            )
+        ]
+
+    async def mock_fetch_page(url, resource_type, client=None):
+        rtype = ResourceType(resource_type) if isinstance(resource_type, str) else resource_type
+        return ResearchDocument(
+            resource=Resource(
+                url=url,
+                type=rtype,
+                title=f"Title for {url}",
+                content_hash="fetch123",
+                retrieved_at=datetime.now(UTC),
+            ),
+            text=f"Fetched content for {url}",
+            last_updated=datetime.now(UTC),
+            popularity=None,
+        )
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_sources)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repositories)
+    monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", mock_fetch_page)
 
 
 @pytest.mark.asyncio
