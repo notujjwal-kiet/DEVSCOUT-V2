@@ -10,61 +10,71 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import structlog
 
+from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
     GoalContextResult,
     IntentPlanResult,
     LearningPlan,
-    Milestone,
     StageMetrics,
 )
+from app.pipeline.structured_llm import generate_structured_with_retry
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 2
 STAGE_NAME = "Intent & Learning Plan"
 
+SYSTEM_PROMPT = (
+    "You are an expert pedagogical curriculum designer and technical mentor. "
+    "Break down technical learning goals into structured, evidence-oriented learning plans. "
+    "Identify specific knowledge gaps, clear learning outcomes, and practical incremental milestones."
+)
+
 
 async def run(
     goal_context: GoalContextResult,
     depth_level: str = "intermediate",
+    provider: GeminiProvider | None = None,
 ) -> IntentPlanResult:
     """
-    Stage 2 entry point: Generate structured learning plan with milestones.
+    Stage 2 entry point: Generate structured learning plan with milestones
+    via GeminiProvider.generate_structured (no search tool, schema allowed).
     """
     started_at = datetime.now(UTC)
 
-    # Stub: Derive knowledge gaps and milestones from goal and stack
-    gaps = [
-        f"Core principles of {skill}" for skill in goal_context.goal.target_skills
-    ] or ["Architecture and best practices"]
+    if provider is None:
+        provider = GeminiProvider()
 
-    outcomes = [
-        f"Master practical implementation of {goal_context.goal.title}",
-        "Understand design trade-offs and performance implications",
-    ]
-
-    milestones = [
-        Milestone(
-            title="Foundation & Setup",
-            description="Understand core concepts and configure environment.",
-            target_outcome="Working baseline setup with no copy-pasted boilerplate.",
-            estimated_duration_minutes=30,
-        ),
-        Milestone(
-            title="Core Implementation",
-            description="Implement main feature guided by incremental tasks.",
-            target_outcome="Core feature functional and understood.",
-            estimated_duration_minutes=60,
-        ),
-    ]
-
-    plan = LearningPlan(
-        goal_id=goal_context.goal.goal_id,
-        knowledge_gaps=gaps,
-        learning_outcomes=outcomes,
-        depth_level=depth_level,
-        milestones=milestones,
+    prompt = (
+        f"Design a structured learning plan for the following learner and goal:\n\n"
+        f"Learner Profile:\n"
+        f"- Experience Level: {goal_context.profile.experience_level.value}\n"
+        f"- Tech Stack: {', '.join(goal_context.profile.tech_stack) if goal_context.profile.tech_stack else 'General'}\n"
+        f"- Constraints: {', '.join(goal_context.profile.constraints) if goal_context.profile.constraints else 'None'}\n\n"
+        f"Learning Goal:\n"
+        f"- Title: {goal_context.goal.title}\n"
+        f"- Description: {goal_context.goal.description}\n"
+        f"- Target Skills: {', '.join(goal_context.goal.target_skills) if goal_context.goal.target_skills else 'Software Engineering'}\n"
+        f"- Goal ID: {goal_context.goal.goal_id}\n"
+        f"- Required Depth Level: {depth_level}\n\n"
+        f"Requirements:\n"
+        f"- goal_id must be exactly '{goal_context.goal.goal_id}'\n"
+        f"- knowledge_gaps: list key conceptual, architectural, or design gaps\n"
+        f"- learning_outcomes: concrete measurable skills the developer will acquire\n"
+        f"- depth_level: '{depth_level}'\n"
+        f"- milestones: 2 to 4 incremental milestones with title, description, target_outcome, and estimated_duration_minutes\n"
     )
+
+    plan = await generate_structured_with_retry(
+        provider=provider,
+        prompt=prompt,
+        schema=LearningPlan,
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+    # Re-enforce deterministic pipeline associations
+    plan.goal_id = goal_context.goal.goal_id
+    plan.depth_level = depth_level
 
     ended_at = datetime.now(UTC)
     metrics = StageMetrics(
@@ -83,3 +93,4 @@ async def run(
     )
 
     return IntentPlanResult(plan=plan, metrics=metrics)
+

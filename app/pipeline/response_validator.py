@@ -12,15 +12,20 @@ Guarantees:
 from __future__ import annotations
 
 import re
+from typing import Sequence
 from pydantic import BaseModel, Field
 
 from app.models.pipeline import (
     CodeGateLevel,
+    Explanation,
+    ExplanationSection,
     LearningResponse,
     Resource,
 )
+from app.research.discovery import normalize_url
 
 FENCED_CODE_PATTERN = re.compile(r"```(?:\w+)?\s*\n?(.*?)```", re.DOTALL)
+NOT_BACKED_BY_SOURCES_MARKER = "[Not backed by sources]"
 
 
 class ValidationReport(BaseModel):
@@ -40,6 +45,186 @@ def extract_fenced_code_blocks(text: str) -> list[str]:
     if not text:
         return []
     return [match.strip() for match in FENCED_CODE_PATTERN.findall(text)]
+
+
+def _build_resource_lookup(
+    resources: Sequence[Resource],
+) -> tuple[set[str], dict[str, str]]:
+    """Build fast lookup structures for verified resource IDs and URLs."""
+    known_ids = {r.resource_id for r in resources}
+    url_to_id: dict[str, str] = {}
+    for r in resources:
+        if r.url:
+            clean_url = r.url.strip()
+            url_to_id[clean_url] = r.resource_id
+            url_to_id[clean_url.rstrip("/")] = r.resource_id
+            try:
+                norm = normalize_url(clean_url)
+                if norm:
+                    url_to_id[norm] = r.resource_id
+            except Exception:
+                pass
+    return known_ids, url_to_id
+
+
+def validate_explanation(
+    explanation: Explanation,
+    resources: Sequence[Resource],
+) -> ValidationReport:
+    """
+    Validate an Explanation against verified Resources.
+    Rules:
+    - Every claim/section must cite at least one verified Resource id or URL,
+      OR must be explicitly marked with '[Not backed by sources]'.
+    - Phantom citations (IDs or URLs not present in verified resources) are flagged.
+    - Confidence score must be in [0.0, 1.0].
+    """
+    issues: list[str] = []
+    citations_valid = True
+    quality_metrics_present = True
+
+    if not explanation.sections:
+        citations_valid = False
+        issues.append(
+            "Explanation has no sections. Claims must be organized in sections with citations."
+        )
+
+    known_ids, url_to_id = _build_resource_lookup(resources)
+
+    for idx, section in enumerate(explanation.sections):
+        valid_cites: list[str] = []
+        phantom_cites: list[str] = []
+
+        for cite in section.citation_resource_ids:
+            clean_cite = cite.strip()
+            if clean_cite in known_ids:
+                valid_cites.append(clean_cite)
+            elif clean_cite in url_to_id:
+                valid_cites.append(url_to_id[clean_cite])
+            else:
+                matched_id: str | None = None
+                try:
+                    norm = normalize_url(clean_cite)
+                    if norm in url_to_id:
+                        matched_id = url_to_id[norm]
+                except Exception:
+                    pass
+
+                if matched_id:
+                    valid_cites.append(matched_id)
+                else:
+                    phantom_cites.append(cite)
+
+        if phantom_cites:
+            citations_valid = False
+            for pc in phantom_cites:
+                issues.append(
+                    f"Section '{section.title}' (index {idx}) cites phantom / nonexistent resource id or url '{pc}'."
+                )
+
+        has_unbacked_marker = (
+            NOT_BACKED_BY_SOURCES_MARKER.lower() in section.content.lower()
+            or "not backed by sources" in section.content.lower()
+        )
+
+        if not valid_cites and not has_unbacked_marker:
+            citations_valid = False
+            issues.append(
+                f"Section '{section.title}' (index {idx}) has no citations and is not marked 'not backed by sources'."
+            )
+
+    if not (0.0 <= explanation.confidence_score <= 1.0):
+        quality_metrics_present = False
+        issues.append(
+            f"Invalid explanation confidence_score: {explanation.confidence_score}. Must be in [0.0, 1.0]."
+        )
+
+    is_valid = citations_valid and quality_metrics_present
+
+    return ValidationReport(
+        is_valid=is_valid,
+        schema_valid=True,
+        citations_valid=citations_valid,
+        code_gate_respected=True,
+        quality_metrics_present=quality_metrics_present,
+        issues=issues,
+    )
+
+
+def repair_explanation(
+    explanation: Explanation,
+    resources: Sequence[Resource],
+    report: ValidationReport | None = None,
+) -> tuple[Explanation, ValidationReport]:
+    """
+    Deterministic repair hook for explanations:
+    - Translates verified Resource URLs in citation_resource_ids to their resource_id.
+    - Strips phantom citations not in verified resources.
+    - If a section has no valid citations, marks its content with '[Not backed by sources]'.
+    - Clamps confidence_score to [0.0, 1.0].
+    """
+    known_ids, url_to_id = _build_resource_lookup(resources)
+
+    has_url_citations = False
+    for sec in explanation.sections:
+        for cite in sec.citation_resource_ids:
+            clean = cite.strip()
+            if clean in url_to_id and clean not in known_ids:
+                has_url_citations = True
+                break
+        if has_url_citations:
+            break
+
+    if report is not None and report.is_valid and not has_url_citations:
+        return explanation, report
+
+    exp_data = explanation.model_dump()
+    sections_data = exp_data.get("sections", [])
+
+    for sec in sections_data:
+        raw_cites = sec.get("citation_resource_ids", [])
+        valid_cites: list[str] = []
+        for cite in raw_cites:
+            clean_cite = cite.strip()
+            if clean_cite in known_ids:
+                if clean_cite not in valid_cites:
+                    valid_cites.append(clean_cite)
+            elif clean_cite in url_to_id:
+                target_id = url_to_id[clean_cite]
+                if target_id not in valid_cites:
+                    valid_cites.append(target_id)
+            else:
+                try:
+                    norm = normalize_url(clean_cite)
+                    if norm in url_to_id:
+                        target_id = url_to_id[norm]
+                        if target_id not in valid_cites:
+                            valid_cites.append(target_id)
+                except Exception:
+                    pass
+
+        sec["citation_resource_ids"] = valid_cites
+
+        # If no valid citations remain, mark as [Not backed by sources]
+        if not valid_cites:
+            content = sec.get("content", "")
+            if (
+                NOT_BACKED_BY_SOURCES_MARKER.lower() not in content.lower()
+                and "not backed by sources" not in content.lower()
+            ):
+                sec["content"] = f"{content.strip()} {NOT_BACKED_BY_SOURCES_MARKER}".strip()
+
+    def _clamp(val: float | None) -> float:
+        if val is None:
+            return 1.0
+        return max(0.0, min(1.0, float(val)))
+
+    exp_data["confidence_score"] = _clamp(exp_data.get("confidence_score"))
+
+    repaired_exp = Explanation.model_validate(exp_data)
+    new_report = validate_explanation(repaired_exp, resources)
+    new_report.repaired = True
+    return repaired_exp, new_report
 
 
 def validate_response(response: LearningResponse) -> ValidationReport:
@@ -65,30 +250,16 @@ def validate_response(response: LearningResponse) -> ValidationReport:
             issues=issues,
         )
 
-    # 2. Citations check: every explanation claim must cite an existing Resource id
-    known_resource_ids = {r.resource_id for r in response.resources}
+    # 2. Citations check: every explanation claim must cite an existing Resource id/url or be marked not backed by sources
     if response.explanation:
-        if not response.explanation.sections:
+        exp_report = validate_explanation(response.explanation, response.resources)
+        if not exp_report.citations_valid:
             citations_valid = False
-            issues.append("Explanation has no sections. Claims must be organized in sections with citations.")
-        for idx, section in enumerate(response.explanation.sections):
-            if not section.citation_resource_ids:
-                citations_valid = False
-                issues.append(
-                    f"Section '{section.title}' (index {idx}) has no citations. "
-                    "Every claim must cite at least one verified Resource id."
-                )
-            else:
-                for cite_id in section.citation_resource_ids:
-                    if cite_id not in known_resource_ids:
-                        citations_valid = False
-                        issues.append(
-                            f"Section '{section.title}' cites nonexistent resource id '{cite_id}'."
-                        )
+            issues.extend(exp_report.issues)
 
     # 3. Code gate decision respected
     gate_level = response.code_gate_decision.level
-    
+
     # Collect all fenced code blocks in text fields
     all_text_blocks: list[str] = []
     if response.explanation:
@@ -159,7 +330,7 @@ def repair_response(response: LearningResponse, report: ValidationReport) -> tup
     """
     Deterministic repair hook for invalid responses.
     - Strips unauthorized fenced code blocks when gate is EXPLAIN or REQUIRE_CHECK.
-    - Filters out nonexistent resource citation IDs.
+    - Resolves URLs or filters out phantom citations, marking unbacked claims as not backed by sources.
     - Clamps confidence and quality scores.
     """
     if report.is_valid:
@@ -192,17 +363,10 @@ def repair_response(response: LearningResponse, report: ValidationReport) -> tup
         repaired_data["snippets"] = valid_snippets
 
     # 2. Repair citation violations
-    known_resource_ids = {r.resource_id for r in response.resources}
     if repaired_data.get("explanation"):
-        exp = repaired_data["explanation"]
-        for sec in exp.get("sections", []):
-            sec["citation_resource_ids"] = [
-                cid for cid in sec.get("citation_resource_ids", [])
-                if cid in known_resource_ids
-            ]
-            # If section citations became empty but resources exist, link the first resource
-            if not sec["citation_resource_ids"] and known_resource_ids:
-                sec["citation_resource_ids"] = [next(iter(known_resource_ids))]
+        current_exp = Explanation.model_validate(repaired_data["explanation"])
+        repaired_exp, _ = repair_explanation(current_exp, response.resources)
+        repaired_data["explanation"] = repaired_exp.model_dump()
 
     # 3. Repair metrics & scores
     def _clamp(val: float | None) -> float:
@@ -221,3 +385,4 @@ def repair_response(response: LearningResponse, report: ValidationReport) -> tup
     new_report = validate_response(repaired_response)
     new_report.repaired = True
     return repaired_response, new_report
+

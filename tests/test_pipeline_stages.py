@@ -38,14 +38,25 @@ from app.pipeline import (
     stage8_decision_report,
     stage9_developer_feedback,
 )
-from app.models.pipeline import Resource, ResourceType
+import re
+from app.llm.provider import GeminiProvider
+from app.models.pipeline import (
+    ConceptEdge,
+    ConceptNode,
+    Explanation,
+    ExplanationSection,
+    LearningPlan,
+    Milestone,
+    Resource,
+    ResourceType,
+)
 from app.research.models import DiscoveredSource, ResearchDocument
 from datetime import UTC, datetime
 
 
 @pytest.fixture(autouse=True)
 def mock_stage3_research_dependencies(monkeypatch):
-    """Mock external discovery, github search, and web fetch in integration tests."""
+    """Mock external discovery, github search, web fetch, and LLM structured generation in integration tests."""
     async def mock_discover_sources(query, max_results=5, provider=None, http_client=None):
         return [
             DiscoveredSource(
@@ -93,9 +104,62 @@ def mock_stage3_research_dependencies(monkeypatch):
             popularity=None,
         )
 
+    async def mock_generate_structured(self, prompt, schema, system_prompt=None, **kwargs):
+        if schema == LearningPlan:
+            return LearningPlan(
+                goal_id="g1",
+                knowledge_gaps=["Concurrency"],
+                learning_outcomes=["Build limiter"],
+                depth_level="intermediate",
+                milestones=[
+                    Milestone(
+                        title="Setup",
+                        description="Setup project",
+                        target_outcome="Working baseline",
+                        estimated_duration_minutes=30,
+                    )
+                ],
+            )
+        if schema == ExplanationResult:
+            cites = re.findall(r"Resource ID: ([a-zA-Z0-9_-]+)", prompt)
+            return ExplanationResult(
+                explanation=Explanation(
+                    topic="Distributed Rate Limiting",
+                    summary="Understanding rate limiting algorithms.",
+                    sections=[
+                        ExplanationSection(
+                            title="Token Bucket",
+                            content="Token bucket algorithm description.",
+                            citation_resource_ids=cites[:1] if cites else [],
+                        )
+                    ],
+                    confidence_score=0.95,
+                ),
+                concept_nodes=[
+                    ConceptNode(
+                        id="c1",
+                        label="Rate Limiter",
+                        description="Token bucket",
+                        difficulty=ExperienceLevel.BEGINNER,
+                    )
+                ],
+                concept_edges=[
+                    ConceptEdge(
+                        source="c1",
+                        target="c1",
+                        relation="self",
+                    )
+                ],
+            )
+        raise ValueError(f"Unexpected schema in mock: {schema}")
+
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-fake-key")
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_sources)
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repositories)
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", mock_fetch_page)
+    monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", mock_generate_structured)
+
 
 
 @pytest.mark.asyncio
