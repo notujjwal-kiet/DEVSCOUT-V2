@@ -57,6 +57,8 @@ async def run(
     min_distinct_source_types: int = DEFAULT_MIN_DISTINCT_SOURCE_TYPES,
     require_official_or_repo: bool = REQUIRE_OFFICIAL_DOCS_OR_REPO,
     max_loops: int = MAX_EVIDENCE_RETRY_LOOPS,
+    loop_count: int | None = None,
+    max_retry_loops: int | None = None,
     now: datetime | None = None,
 ) -> EvidenceReviewResult:
     """
@@ -66,7 +68,11 @@ async def run(
     started_at = datetime.now(UTC)
     current_time = now if now is not None else started_at
     goal_id = discovery_result.goal_id
-    loop_count = discovery_result.loop_count
+    if max_retry_loops is not None:
+        max_loops = max_retry_loops
+    active_loop_count = loop_count if loop_count is not None else discovery_result.loop_count
+    loop_count = active_loop_count
+
 
     flagged_uncertainties: list[str] = []
     reviewed_resources: list[Resource] = []

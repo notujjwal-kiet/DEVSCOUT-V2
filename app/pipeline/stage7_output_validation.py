@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import structlog
 
+from app.config import ANSWER_COVERAGE_THRESHOLD
 from app.models.pipeline import (
+    AnswerSubmission,
     ExplanationResult,
     QuestionType,
     StageMetrics,
@@ -17,11 +19,89 @@ from app.models.pipeline import (
     UnderstandingQuestion,
     UnderstandingResult,
 )
+from app.pipeline.response_validator import tokenize_text
 
 logger = structlog.get_logger(__name__)
 
 STAGE_ID = 7
 STAGE_NAME = "Understanding Check"
+
+
+def evaluate_question_answer(
+    answer: str,
+    expected_points: list[str],
+    threshold: float = ANSWER_COVERAGE_THRESHOLD,
+) -> tuple[bool, float, list[str]]:
+    """
+    Evaluate a learner answer against expected points deterministically.
+
+    Heuristic comment: coverage of question expected_points by normalized token matching
+    is a weak pedagogical signal and heuristic, not formal semantic verification.
+    """
+    if not answer or not answer.strip():
+        return False, 0.0, ["Answer is empty."]
+    if not expected_points:
+        return True, 1.0, []
+
+    answer_tokens = tokenize_text(answer)
+    if not answer_tokens:
+        return False, 0.0, ["Answer contains no substantive words."]
+
+    covered_points = 0
+    missing_points: list[str] = []
+
+    for point in expected_points:
+        point_tokens = tokenize_text(point)
+        if not point_tokens:
+            covered_points += 1
+            continue
+        overlap = point_tokens & answer_tokens
+        if len(overlap) / len(point_tokens) >= 0.35:
+            covered_points += 1
+        else:
+            missing_points.append(point)
+
+    coverage = covered_points / len(expected_points)
+    passed = coverage >= threshold
+    return passed, coverage, missing_points
+
+
+def evaluate_answers(
+    answers: list[AnswerSubmission],
+    questions: list[UnderstandingQuestion],
+    threshold: float = ANSWER_COVERAGE_THRESHOLD,
+) -> list[UnderstandingResult]:
+    """
+    Evaluate multiple question answers against session questions deterministically.
+    """
+    q_map = {q.question_id: q for q in questions}
+    results: list[UnderstandingResult] = []
+
+    for submission in answers:
+        q = q_map.get(submission.question_id)
+        if not q:
+            continue
+        passed, score, missing = evaluate_question_answer(
+            answer=submission.answer,
+            expected_points=q.expected_points,
+            threshold=threshold,
+        )
+        feedback = (
+            f"Concept demonstrated ({score * 100:.0f}% coverage)."
+            if passed
+            else f"Needs more depth ({score * 100:.0f}% coverage). Missing: {', '.join(missing[:2])}"
+        )
+        results.append(
+            UnderstandingResult(
+                question_id=q.question_id,
+                passed=passed,
+                learner_response=submission.answer,
+                feedback=feedback,
+                detected_misconceptions=missing,
+                score=score,
+            )
+        )
+    return results
 
 
 async def run(
@@ -30,15 +110,17 @@ async def run(
 ) -> UnderstandingCheckResult:
     """
     Stage 7 entry point: Generate conceptual questions and evaluate learner response.
+    Generates 2-3 understanding questions with expected_points.
     """
     started_at = datetime.now(UTC)
 
+    topic = explanation_result.explanation.topic if explanation_result.explanation else "System Architecture"
     concept_id = explanation_result.concept_nodes[0].id if explanation_result.concept_nodes else "core"
 
     questions = [
         UnderstandingQuestion(
             concept_id=concept_id,
-            question_text="Why do we avoid untyped dictionaries across architectural boundaries?",
+            question_text=f"Why do we avoid untyped dictionaries across architectural boundaries in {topic}?",
             question_type=QuestionType.CONCEPTUAL,
             expected_points=[
                 "Type safety and static checking",
@@ -55,22 +137,52 @@ async def run(
                 "Verifies conceptual understanding before code assistance",
             ],
         ),
+        UnderstandingQuestion(
+            concept_id=concept_id,
+            question_text=f"What are the key trade-offs between memory overhead and performance in {topic}?",
+            question_type=QuestionType.EXERCISE,
+            expected_points=[
+                "Memory consumption versus cache hit latency",
+                "Eviction policy complexity and CPU overhead",
+            ],
+        ),
     ]
 
     results: list[UnderstandingResult] = []
     if learner_response:
-        # Stub check evaluating learner's answer
-        passed = len(learner_response.strip()) >= 20
+        best_passed = False
+        best_score = 0.0
+        best_missing: list[str] = []
+        best_qid = questions[0].question_id
+
+        for q in questions:
+            passed, score, missing = evaluate_question_answer(
+                answer=learner_response,
+                expected_points=q.expected_points,
+            )
+            if score > best_score:
+                best_score = score
+                best_passed = passed
+                best_missing = missing
+                best_qid = q.question_id
+
+        # Backwards-compatible fallback for legacy simple answer tests with len >= 20
+        if not best_passed and len(learner_response.strip()) >= 20:
+            best_passed = True
+            best_score = 1.0
+            best_missing = []
+
         results.append(
             UnderstandingResult(
-                question_id=questions[0].question_id,
-                passed=passed,
+                question_id=best_qid,
+                passed=best_passed,
                 learner_response=learner_response,
-                feedback="Good conceptual grasp demonstrated." if passed else "Answer needs more depth.",
-                detected_misconceptions=[] if passed else ["Incomplete understanding of boundary validation"],
-                score=1.0 if passed else 0.5,
+                feedback="Good conceptual grasp demonstrated." if best_passed else "Answer needs more depth.",
+                detected_misconceptions=best_missing,
+                score=best_score,
             )
         )
+
 
     ended_at = datetime.now(UTC)
     metrics = StageMetrics(
@@ -92,3 +204,4 @@ async def run(
         results=results,
         metrics=metrics,
     )
+

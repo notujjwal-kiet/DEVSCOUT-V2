@@ -23,6 +23,8 @@ from app.pipeline import (
     stage8_decision_report,
     stage9_developer_feedback,
     response_validator,
+    orchestrator,
+    session_store,
 )
 
 # Semantic stage aliases
@@ -35,6 +37,11 @@ stage6_guided_work = stage6_recommendation
 stage7_understanding_check = stage7_output_validation
 stage8_code_gate = stage8_decision_report
 stage9_progress_reflection = stage9_developer_feedback
+
+# Orchestrator & Session Store exports
+run_learning_pipeline = orchestrator.run_learning_pipeline
+handle_code_request = orchestrator.handle_code_request
+get_session_store = session_store.get_session_store
 
 # Cross-cutting validator exports
 validate_response = response_validator.validate_response
@@ -62,9 +69,16 @@ __all__ = [
     "stage7_understanding_check",
     "stage8_code_gate",
     "stage9_progress_reflection",
+    # Orchestrator & Session Store
+    "orchestrator",
+    "session_store",
+    "run_learning_pipeline",
+    "handle_code_request",
+    "get_session_store",
     # Validator
     "response_validator",
     "validate_response",
     "repair_response",
     "ValidationReport",
 ]
+

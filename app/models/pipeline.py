@@ -295,6 +295,7 @@ class LearningResponse(BaseModel):
     resources: list[Resource] = Field(default_factory=list)
     explanation: Explanation | None = None
     snippets: list[Snippet] = Field(default_factory=list)
+    full_code: str | None = None
     concept_nodes: list[ConceptNode] = Field(default_factory=list)
     concept_edges: list[ConceptEdge] = Field(default_factory=list)
     questions: list[UnderstandingQuestion] = Field(default_factory=list)
@@ -305,6 +306,45 @@ class LearningResponse(BaseModel):
     quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
     metrics: list[StageMetrics] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class LearnRequest(BaseModel):
+    """Input payload for initiating a learning session via POST /api/learn."""
+
+    goal: str = Field(..., min_length=3, max_length=2000, description="What the developer wants to learn or build")
+    project: str | None = Field(default=None, description="Current project context or name")
+    experience_level: ExperienceLevel = Field(default=ExperienceLevel.BEGINNER)
+    tech_stack: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    target_skills: list[str] = Field(default_factory=list)
+    wants_snippet: bool = Field(default=False)
+
+
+class AnswerSubmission(BaseModel):
+    """A learner's answer to an understanding question."""
+
+    question_id: str
+    answer: str
+
+
+class CodeRequest(BaseModel):
+    """Input payload for requesting code or submitting answers via POST /api/code-request."""
+
+    response_id: str
+    wants_full_code: bool = True
+    attempt_code: str | None = None
+    attempt_language: str | None = None
+    answers: list[AnswerSubmission] | None = None
+
+
+class FullCodeSolution(BaseModel):
+    """Structured LLM output for verified full code release."""
+
+    code: str
+    language: str = "python"
+    explanation: str
+    line_by_line_explanation: list[str] = Field(default_factory=list)
+
 
 
 # ── Stage Typed Return Models (for stages 1-9) ────────────────────────────────
