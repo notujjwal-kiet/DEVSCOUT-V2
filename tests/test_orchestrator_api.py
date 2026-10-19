@@ -277,6 +277,59 @@ async def test_evidence_loop_triggered_once(monkeypatch):
     assert result.explanation is not None
 
 
+@pytest.mark.asyncio
+async def test_orchestrator_evidence_loop_reruns_only_thin_topics(monkeypatch):
+    """When Stage 4 identifies thin/insufficient topics, Stage 3 is retried with only_topics for those topics."""
+    from app.pipeline import stage3_research, stage4_evidence_validation
+
+    call_counts = {"stage3": 0, "stage4": 0}
+    stage3_received_only_topics: list[list[str] | None] = []
+
+    real_stage3_run = stage3_research.run
+    real_stage4_run = stage4_evidence_validation.run
+
+    async def mock_stage3_tracking(*args, **kwargs):
+        call_counts["stage3"] += 1
+        only_t = kwargs.get("only_topics")
+        stage3_received_only_topics.append(list(only_t) if only_t is not None else None)
+        return await real_stage3_run(*args, **kwargs)
+
+    async def mock_stage4_with_thin_topic(*args, **kwargs):
+        call_counts["stage4"] += 1
+        res = await real_stage4_run(*args, **kwargs)
+        if call_counts["stage4"] == 1:
+            # First attempt: only "Sliding Window" is thin/insufficient
+            res.is_sufficient = False
+            res.needs_more_evidence = True
+            res.insufficient_topics = ["Sliding Window"]
+        else:
+            # Retry attempt: sufficient
+            res.is_sufficient = True
+            res.needs_more_evidence = False
+            res.insufficient_topics = []
+        return res
+
+    monkeypatch.setattr("app.pipeline.stage3_research.run", mock_stage3_tracking)
+    monkeypatch.setattr("app.pipeline.stage4_evidence_validation.run", mock_stage4_with_thin_topic)
+
+    request = LearnRequest(
+        goal="Distributed Rate Limiter",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+
+    result = await run_learning_pipeline(request)
+
+    assert call_counts["stage3"] == 2
+    assert call_counts["stage4"] == 2
+
+    # Loop 0 searched all topics (only_topics is None)
+    assert stage3_received_only_topics[0] is None
+    # Loop 1 retried ONLY the thin topic
+    assert stage3_received_only_topics[1] == ["Sliding Window"]
+    assert result.explanation is not None
+
+
 # ── Test 3: Trivial Attempt Does Not Unlock FULL ───────────────────────────────
 
 @pytest.mark.asyncio

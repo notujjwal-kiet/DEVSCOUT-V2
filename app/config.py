@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     confidence_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     answer_coverage_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     min_questions_answered: int = Field(default=2, ge=1)
+    min_sources_per_topic: int = Field(default=2, ge=1)
+    min_distinct_domains: int = Field(default=2, ge=1)
+    min_distinct_source_types: int = Field(default=2, ge=1)
+    require_official_or_repo: bool = Field(default=True)
+    freshness_stale_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # ── Excerpts & Evidence Grounding ─────────────────────────────
     max_excerpt_chars: int = Field(default=4000, ge=100)
@@ -86,6 +91,17 @@ STAGE5_TOP_N_RESOURCES: int = 3
 SUPPORT_TOKEN_OVERLAP_THRESHOLD: float = 0.15
 ANSWER_COVERAGE_THRESHOLD: float = 0.6
 MIN_QUESTIONS_ANSWERED: int = 2
+MIN_SOURCES_PER_TOPIC: int = 2
+MIN_DISTINCT_DOMAINS: int = 2
+MIN_DISTINCT_SOURCE_TYPES: int = 2
+REQUIRE_OFFICIAL_DOCS_OR_REPO: bool = True
+FRESHNESS_STALE_THRESHOLD: float = 0.5
+MAX_EVIDENCE_RETRY_LOOPS: int = 2
+
+# Backward-compatible aliases
+DEFAULT_MIN_DISTINCT_DOMAINS: int = MIN_DISTINCT_DOMAINS
+DEFAULT_MIN_DISTINCT_SOURCE_TYPES: int = MIN_DISTINCT_SOURCE_TYPES
+DEFAULT_FRESHNESS_STALE_THRESHOLD: float = FRESHNESS_STALE_THRESHOLD
 
 
 

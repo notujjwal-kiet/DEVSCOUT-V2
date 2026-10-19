@@ -85,8 +85,9 @@ async def test_stage4_stale_blog():
     # Overall is_fresh is False because of the stale blog
     assert result.is_fresh is False
     assert any("stale" in msg.lower() for msg in result.flagged_uncertainties)
-    # Since not fresh, needs more evidence
-    assert result.needs_more_evidence is True
+    # Stale but sufficient evidence does NOT loop (needs_more_evidence depends ONLY on sufficiency)
+    assert result.is_sufficient is True
+    assert result.needs_more_evidence is False
 
 
 @pytest.mark.asyncio
@@ -278,3 +279,125 @@ async def test_stage4_multi_perspective_sufficiency():
     assert result.is_fresh is True
     assert result.needs_more_evidence is False
     assert len(result.reviewed_resources) == 3
+
+
+@pytest.mark.asyncio
+async def test_stage4_stale_but_sufficient_does_not_loop():
+    """Stale-but-sufficient evidence does not trigger a loop; uncertainty flags are kept."""
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+    stale_date = now - timedelta(days=400)
+
+    # 2 resources: 1 stale docs, 1 stale repo (both older than half-life)
+    # They provide 2 distinct domains, 2 distinct types, and official docs + repo
+    res_docs = _make_resource(
+        url="https://docs.python.org/3/library/asyncio.html",
+        rtype=ResourceType.DOCS,
+        title="Asyncio Documentation",
+        last_updated=stale_date,
+        topic="Async Programming",
+    )
+    res_repo = _make_resource(
+        url="https://github.com/python/cpython",
+        rtype=ResourceType.REPO,
+        title="CPython Repository",
+        last_updated=stale_date,
+        topic="Async Programming",
+    )
+
+    discovery = SourceDiscoveryResult(
+        goal_id="goal-stale-sufficient",
+        resources=[res_docs, res_repo],
+        loop_count=0,
+    )
+
+    result = await stage4_evidence_validation.run(discovery, now=now)
+
+    # Uncertainty flags are set on both resources due to staleness
+    assert all(r.uncertainty_flag is True for r in result.reviewed_resources)
+    assert result.is_fresh is False
+
+    # Sufficiency is met (>= 2 per topic, 2 domains, 2 types, official docs/repo)
+    assert result.is_sufficient is True
+    # Stale-but-sufficient MUST NOT loop!
+    assert result.needs_more_evidence is False
+    assert result.insufficient_topics == []
+
+
+@pytest.mark.asyncio
+async def test_stage4_one_thin_topic_returns_insufficient_topic():
+    """Sufficiency evaluated per topic returns only the thin/insufficient topic(s)."""
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+
+    # Topic 1: Concurrency (2 resources, sufficient)
+    res_c1 = _make_resource(
+        url="https://docs.python.org/3/library/asyncio.html",
+        rtype=ResourceType.DOCS,
+        title="Asyncio Docs",
+        last_updated=now,
+        topic="Concurrency",
+    )
+    res_c2 = _make_resource(
+        url="https://github.com/python/cpython",
+        rtype=ResourceType.REPO,
+        title="CPython",
+        last_updated=now,
+        topic="Concurrency",
+    )
+
+    # Topic 2: Rate Limiting (1 resource only -> thin)
+    res_r1 = _make_resource(
+        url="https://redis.io/docs/manual/patterns/rate-limiter/",
+        rtype=ResourceType.DOCS,
+        title="Redis Rate Limiting",
+        last_updated=now,
+        topic="Rate Limiting",
+    )
+
+    discovery = SourceDiscoveryResult(
+        goal_id="goal-thin-topic",
+        resources=[res_c1, res_c2, res_r1],
+        loop_count=0,
+    )
+
+    result = await stage4_evidence_validation.run(
+        discovery,
+        now=now,
+        expected_topics=["Concurrency", "Rate Limiting"],
+    )
+
+    assert result.is_sufficient is False
+    assert result.needs_more_evidence is True
+    assert result.insufficient_topics == ["Rate Limiting"]
+
+
+@pytest.mark.asyncio
+async def test_stage4_loop_cap_respected():
+    """When loop cap is reached, needs_more_evidence is False even when evidence is thin."""
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+
+    # Only 1 resource (thin)
+    res = _make_resource(
+        url="https://docs.python.org/3/library/asyncio.html",
+        rtype=ResourceType.DOCS,
+        title="Asyncio Docs",
+        last_updated=now,
+        topic="Concurrency",
+    )
+
+    discovery = SourceDiscoveryResult(
+        goal_id="goal-loop-cap-test",
+        resources=[res],
+        loop_count=2,
+    )
+
+    result = await stage4_evidence_validation.run(
+        discovery,
+        now=now,
+        max_loops=2,
+        expected_topics=["Concurrency"],
+    )
+
+    assert result.is_sufficient is False
+    # Loop cap reached -> needs_more_evidence must be False!
+    assert result.needs_more_evidence is False
+    assert result.loop_count == 2

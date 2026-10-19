@@ -458,3 +458,35 @@ async def test_stage3_stores_cleaned_excerpt_and_preserves_hash(monkeypatch):
     assert "Distributed caching fundamentals" in resource.excerpt
     assert resource.excerpt != ""
 
+
+@pytest.mark.asyncio
+async def test_stage3_only_topics_filters_research(monkeypatch):
+    """When only_topics is provided, stage3_research.run searches ONLY those topics."""
+    captured_discovery_queries: list[str] = []
+    captured_github_queries: list[str] = []
+
+    async def mock_discover_sources(query, max_results=5, provider=None, http_client=None):
+        captured_discovery_queries.append(query)
+        return []
+
+    async def mock_search_repos(self, query, limit=3):
+        captured_github_queries.append(query)
+        return []
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_sources)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repos)
+
+    plan_result = _make_plan_result(["Topic A", "Topic B", "Topic C"])
+
+    # Pass only_topics=["Topic B"]
+    result = await stage3_research.run(plan_result, only_topics=["Topic B"])
+
+    assert isinstance(result, SourceDiscoveryResult)
+    # Queries should ONLY be for Topic B (3 discovery queries, 1 github query)
+    assert len(captured_discovery_queries) == 3
+    assert all("Topic B" in q for q in captured_discovery_queries)
+    assert not any("Topic A" in q or "Topic C" in q for q in captured_discovery_queries)
+
+    assert len(captured_github_queries) == 1
+    assert "Topic B" in captured_github_queries[0]
+

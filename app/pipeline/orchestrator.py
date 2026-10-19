@@ -48,6 +48,7 @@ from app.models.pipeline import (
     QuestionType,
     Resource,
     ResourceType,
+    SourceDiscoveryResult,
     StageMetrics,
     UnderstandingCheckResult,
     UnderstandingQuestion,
@@ -211,12 +212,16 @@ async def run_learning_pipeline(
     loop_count = 0
     exclude_urls: list[str] = []
     evidence_result: EvidenceReviewResult | None = None
+    accumulated_resources: list[Resource] = []
+    plan_topics = stage3_research.extract_topics(stage2_result)
+    only_topics: list[str] | None = None
 
     while loop_count <= max_loops:
         stage3_result = await stage3_research.run(
             plan_result=stage2_result,
             loop_count=loop_count,
             exclude_urls=exclude_urls,
+            only_topics=only_topics,
             provider=provider,
             github_connector=github_connector,
             http_client=http_client,
@@ -224,10 +229,27 @@ async def run_learning_pipeline(
         if stage3_result.metrics:
             metrics.append(stage3_result.metrics)
 
+        # Merge discovered resources with previously accumulated resources (deduped by URL)
+        seen_res_urls = {r.url for r in accumulated_resources if r.url}
+        for r in stage3_result.resources:
+            if r.url and r.url not in seen_res_urls:
+                accumulated_resources.append(r)
+                seen_res_urls.add(r.url)
+            elif not r.url:
+                accumulated_resources.append(r)
+
+        combined_discovery = SourceDiscoveryResult(
+            goal_id=stage3_result.goal_id,
+            resources=list(accumulated_resources),
+            loop_count=loop_count,
+            metrics=stage3_result.metrics,
+        )
+
         evidence_result = await stage4_evidence_validation.run(
-            discovery_result=stage3_result,
+            discovery_result=combined_discovery,
             loop_count=loop_count,
             max_retry_loops=max_loops,
+            expected_topics=plan_topics,
         )
         if evidence_result.metrics:
             metrics.append(evidence_result.metrics)
@@ -242,10 +264,16 @@ async def run_learning_pipeline(
 
         if loop_count < max_loops:
             loop_count += 1
+            only_topics = (
+                evidence_result.insufficient_topics
+                if evidence_result.insufficient_topics
+                else None
+            )
             logger.info(
                 "evidence_insufficient_triggering_loop",
                 loop_count=loop_count,
                 seen_count=len(exclude_urls),
+                only_topics=only_topics,
             )
         else:
             logger.warning(

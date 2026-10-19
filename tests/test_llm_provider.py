@@ -246,6 +246,7 @@ async def test_gemini_generate_structured_invalid_json():
 def test_gemini_missing_model_raises_clear_error(monkeypatch):
     """GeminiProvider raises clear LLMProviderError if GEMINI_MODEL is missing."""
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.setattr("app.config.get_settings", lambda: MagicMock(gemini_model=None, gemini_api_key="test-key"))
     with pytest.raises(LLMProviderError, match="GEMINI_MODEL is not set. Please configure GEMINI_MODEL in .env."):
         GeminiProvider(model_name=None, api_key="test-key")
 
@@ -254,6 +255,7 @@ def test_gemini_missing_api_key_raises_clear_error(monkeypatch):
     """GeminiProvider raises clear LLMProviderError if GEMINI_API_KEY is missing."""
     monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr("app.config.get_settings", lambda: MagicMock(gemini_model="gemini-test", gemini_api_key=None))
     with pytest.raises(LLMProviderError, match="GEMINI_API_KEY is not set. Please configure GEMINI_API_KEY in .env."):
         GeminiProvider(model_name="gemini-test", api_key=None)
 

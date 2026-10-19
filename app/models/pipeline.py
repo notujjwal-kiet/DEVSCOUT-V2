@@ -436,6 +436,7 @@ class EvidenceReviewResult(BaseModel):
     needs_more_evidence: bool = False
     loop_count: int = 0
     seen_urls: list[str] = Field(default_factory=list)
+    insufficient_topics: list[str] = Field(default_factory=list)
     metrics: StageMetrics | None = None
 
     @property

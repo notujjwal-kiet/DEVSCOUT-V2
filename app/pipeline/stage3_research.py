@@ -86,7 +86,7 @@ class _CandidateSource:
     topic: str = ""
 
 
-def _extract_topics(plan_result: IntentPlanResult) -> list[str]:
+def extract_topics(plan_result: IntentPlanResult) -> list[str]:
     """Extract distinct topic and milestone titles from the learning plan."""
     topics: list[str] = []
     if plan_result.plan and plan_result.plan.milestones:
@@ -108,10 +108,14 @@ def _extract_topics(plan_result: IntentPlanResult) -> list[str]:
     return topics
 
 
+_extract_topics = extract_topics
+
+
 async def run(
     plan_result: IntentPlanResult,
     loop_count: int = 0,
     exclude_urls: Sequence[str] | set[str] | None = None,
+    only_topics: Sequence[str] | None = None,
     provider: object | None = None,
     github_connector: GitHubConnector | None = None,
     http_client: httpx.AsyncClient | None = None,
@@ -120,6 +124,7 @@ async def run(
     """
     Stage 3 entry point: Discover multiple authoritative sources for the learning plan.
     - For each topic/milestone in plan_result, builds 3 query strings (docs, GitHub examples, community) by template.
+    - If only_topics is provided, retries search only those topics.
     - Runs discover_sources for each concurrently.
     - Adds GitHubConnector results.
     - Merges and dedupes by normalized URL, skipping any URLs passed in exclude_urls.
@@ -130,7 +135,16 @@ async def run(
     started_at = datetime.now(UTC)
     goal_id = plan_result.plan.goal_id if plan_result.plan else "unknown-goal"
 
-    topics = _extract_topics(plan_result)
+    all_topics = extract_topics(plan_result)
+    if only_topics is not None:
+        clean_only = [t.strip() for t in only_topics if t and t.strip()]
+        only_lookup = {t.lower() for t in clean_only}
+        topics = [t for t in all_topics if t.lower() in only_lookup]
+        for t in clean_only:
+            if t.lower() not in {x.lower() for x in topics}:
+                topics.append(t)
+    else:
+        topics = all_topics
 
     # 1. Build 3 query strings (docs, GitHub examples, community) by template for each topic
     discovery_queries: list[tuple[str, ResourceType, str]] = []
