@@ -2,15 +2,20 @@
 app/api/learn.py
 
 API routes for DEVSCOUT learning sessions:
-- POST /api/learn: Initiate an end-to-end learning session.
+- POST /api/learn: Initiate background learning session job (202 Accepted).
+- GET /api/learn/{job_id}: Query job status and result.
 - POST /api/code-request: Evaluate understanding answers / attempt code and request full code.
 """
 from __future__ import annotations
 
+import asyncio
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.models.pipeline import CodeRequest, LearningResponse, LearnRequest
+from app.api.auth import verify_api_key_and_rate_limit
+from app.config import get_settings
+from app.models.pipeline import CodeRequest, LearnJobRecord, LearningResponse, LearnRequest
+from app.pipeline.job_store import get_job_store
 from app.pipeline.orchestrator import (
     SessionNotFoundError,
     handle_code_request,
@@ -19,26 +24,76 @@ from app.pipeline.orchestrator import (
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key_and_rate_limit)])
+
+_running_tasks: set[asyncio.Task[None]] = set()
 
 
-@router.post("/learn", response_model=LearningResponse, summary="Initiate learning session")
-async def create_learning_session(request: LearnRequest) -> LearningResponse:
-    """
-    Run pipeline end-to-end for a given developer goal, skill context, and stack.
-    Returns complete validated LearningResponse with expected_points stripped from questions.
-    """
+async def _run_pipeline_job(job_id: str, request: LearnRequest) -> None:
+    """Execute pipeline in background, updating per-stage progress and respecting timeout."""
+    cfg = get_settings()
+    store = get_job_store()
+
+    async def _on_progress(stage_id: int, stage_name: str, pct: float) -> None:
+        await store.update_progress(job_id, stage_id, stage_name, pct)
+
     try:
-        response = await run_learning_pipeline(request)
-        # Req 3: never return expected_points to clients
-        return response.to_public()
-    except Exception as exc:
-        # Req 5: generic 500 message; log details internally only
-        logger.error("learn_pipeline_failed", error=str(exc), exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="An internal error occurred. Please try again later.",
+        response = await asyncio.wait_for(
+            run_learning_pipeline(request, on_progress=_on_progress),
+            timeout=cfg.pipeline_timeout_seconds,
         )
+        # Strip expected_points before saving to public result
+        await store.mark_completed(job_id, response.to_public())
+    except TimeoutError:
+        logger.warning(
+            "learning_pipeline_job_timed_out",
+            job_id=job_id,
+            timeout=cfg.pipeline_timeout_seconds,
+        )
+        await store.mark_timed_out(
+            job_id,
+            f"Pipeline execution timed out after {cfg.pipeline_timeout_seconds} seconds",
+        )
+    except Exception as exc:
+        logger.error("learning_pipeline_job_failed", job_id=job_id, error=str(exc), exc_info=True)
+        await store.mark_failed(job_id, "An internal error occurred during pipeline execution.")
+
+
+@router.post(
+    "/learn",
+    response_model=LearnJobRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Initiate background learning session",
+)
+async def create_learning_session(request: LearnRequest) -> LearnJobRecord:
+    """
+    Initiate background pipeline job for a given developer goal and skill context.
+    Returns 202 Accepted with job_id immediately.
+    """
+    job_store = get_job_store()
+    job = await job_store.create_job()
+
+    task = asyncio.create_task(_run_pipeline_job(job.job_id, request))
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
+
+    return job
+
+
+@router.get(
+    "/learn/{job_id}",
+    response_model=LearnJobRecord,
+    summary="Get learning session job status and result",
+)
+async def get_learning_job(job_id: str) -> LearnJobRecord:
+    """Retrieve current status, per-stage progress, and final result for a job."""
+    job = await get_job_store().get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found",
+        )
+    return job
 
 
 @router.post("/code-request", response_model=LearningResponse, summary="Request code or submit answers")
@@ -50,7 +105,6 @@ async def request_code(request: CodeRequest) -> LearningResponse:
     """
     try:
         response = await handle_code_request(request)
-        # Req 3: never return expected_points to clients
         return response.to_public()
     except SessionNotFoundError as exc:
         raise HTTPException(
@@ -58,7 +112,6 @@ async def request_code(request: CodeRequest) -> LearningResponse:
             detail=str(exc),
         )
     except Exception as exc:
-        # Req 5: generic 500 message; log details internally only
         logger.error("code_request_failed", error=str(exc), exc_info=True)
         raise HTTPException(
             status_code=500,

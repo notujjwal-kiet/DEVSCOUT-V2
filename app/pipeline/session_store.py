@@ -73,16 +73,59 @@ class SessionStore(ABC):
         pass
 
 
-class InMemorySessionStore(SessionStore):
-    """In-memory implementation of SessionStore."""
+from app.config import get_settings
 
-    def __init__(self) -> None:
+
+class InMemorySessionStore(SessionStore):
+    """In-memory implementation of SessionStore with TTL eviction and max-sessions cap."""
+
+    def __init__(
+        self,
+        ttl_seconds: float | None = None,
+        max_sessions: int | None = None,
+    ) -> None:
         self._store: dict[str, SessionData] = {}
+        self._ttl_seconds = ttl_seconds
+        self._max_sessions = max_sessions
+
+    def _get_ttl_seconds(self) -> float:
+        if self._ttl_seconds is not None:
+            return self._ttl_seconds
+        return get_settings().session_ttl_seconds
+
+    def _get_max_sessions(self) -> int:
+        if self._max_sessions is not None:
+            return self._max_sessions
+        return get_settings().max_sessions
+
+    def _evict_expired(self) -> None:
+        ttl = self._get_ttl_seconds()
+        now = _utcnow()
+        expired = [
+            k for k, v in self._store.items()
+            if (now - v.updated_at).total_seconds() > ttl
+        ]
+        for k in expired:
+            self._store.pop(k, None)
 
     async def get(self, response_id: str) -> SessionData | None:
-        return self._store.get(response_id)
+        self._evict_expired()
+        session = self._store.get(response_id)
+        if session is None:
+            return None
+        ttl = self._get_ttl_seconds()
+        if (_utcnow() - session.updated_at).total_seconds() > ttl:
+            self._store.pop(response_id, None)
+            return None
+        return session
 
     async def save(self, session: SessionData) -> None:
+        self._evict_expired()
+        max_cap = self._get_max_sessions()
+        if session.response_id not in self._store and len(self._store) >= max_cap:
+            oldest_key = min(self._store, key=lambda k: self._store[k].updated_at)
+            self._store.pop(oldest_key, None)
+
         session.updated_at = _utcnow()
         self._store[session.response_id] = session
 
@@ -91,6 +134,7 @@ class InMemorySessionStore(SessionStore):
 
     async def clear(self) -> None:
         self._store.clear()
+
 
 
 # Default singleton instance

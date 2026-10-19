@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.api.router import api_router
+from app.api.middleware import RequestSizeLimitMiddleware
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if cfg.app_env == "development" else None,
     )
 
+    application.add_middleware(RequestSizeLimitMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.cors_origins,
@@ -51,6 +53,7 @@ def create_app() -> FastAPI:
     application.include_router(api_router)
 
     return application
+
 
 
 app = create_app()

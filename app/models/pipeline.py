@@ -69,6 +69,14 @@ class PipelineStatus(StrEnum):
     FAILED = "failed"
 
 
+class JobStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
 # ── Stage Telemetry ────────────────────────────────────────────────────────────
 
 class StageMetrics(BaseModel):
@@ -376,13 +384,29 @@ class LearningResponse(BaseModel):
 class LearnRequest(BaseModel):
     """Input payload for initiating a learning session via POST /api/learn."""
 
-    goal: str = Field(..., min_length=3, max_length=2000, description="What the developer wants to learn or build")
+    goal: str = Field(..., min_length=3, max_length=1000, description="What the developer wants to learn or build")
+    description: str | None = Field(default=None, max_length=2000, description="Optional detailed description")
     project: str | None = Field(default=None, description="Current project context or name")
     experience_level: ExperienceLevel = Field(default=ExperienceLevel.BEGINNER)
     tech_stack: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     target_skills: list[str] = Field(default_factory=list)
     wants_snippet: bool = Field(default=False)
+
+
+class LearnJobRecord(BaseModel):
+    """Record tracking background execution of a learning pipeline job."""
+
+    job_id: str = Field(default_factory=_new_id)
+    status: JobStatus = Field(default=JobStatus.PENDING)
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    current_stage: str | None = None
+    stage_id: int | None = None
+    result: LearningResponse | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
 
 
 class AnswerSubmission(BaseModel):

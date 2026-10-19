@@ -188,9 +188,21 @@ async def test_full_happy_path_post_api_learn():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post("/api/learn", json=payload)
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
 
-    assert response.status_code == 200
-    data = response.json()
+        pdata = None
+        for _ in range(100):
+            poll = await client.get(f"/api/learn/{job_id}")
+            assert poll.status_code == 200
+            pdata = poll.json()
+            if pdata["status"] == "completed":
+                break
+            await asyncio.sleep(0.05)
+
+    assert pdata is not None and pdata["status"] == "completed"
+    data = pdata["result"]
+    assert data is not None
 
     assert "response_id" in data
     assert data["learning_plan"] is not None
@@ -201,7 +213,7 @@ async def test_full_happy_path_post_api_learn():
 
     # 2-3 understanding questions returned but expected_points MUST NOT exist in public questions
     assert len(data["questions"]) in (2, 3)
-    assert "expected_points" not in response.text
+    assert "expected_points" not in poll.text
     for q in data["questions"]:
         # Req 3: answer key never exposed to API consumers
         assert "expected_points" not in q, f"expected_points leaked for question {q['question_id']}"
@@ -756,10 +768,20 @@ async def test_expected_points_leak_check():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         learn_resp = await client.post("/api/learn", json=payload)
+        assert learn_resp.status_code == 202
+        job_id = learn_resp.json()["job_id"]
 
-    assert learn_resp.status_code == 200
-    assert "expected_points" not in learn_resp.text
-    learn_data = learn_resp.json()
+        poll_resp = None
+        for _ in range(100):
+            poll_resp = await client.get(f"/api/learn/{job_id}")
+            if poll_resp.json()["status"] == "completed":
+                break
+            await asyncio.sleep(0.05)
+
+    assert poll_resp is not None
+    assert poll_resp.json()["status"] == "completed"
+    assert "expected_points" not in poll_resp.text
+    learn_data = poll_resp.json()["result"]
     assert len(learn_data["questions"]) >= 1
     for q in learn_data["questions"]:
         assert "expected_points" not in q
@@ -942,11 +964,21 @@ async def test_generic_500_message_on_internal_error(monkeypatch):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp1 = await client.post("/api/learn", json={"goal": "Crashing test"})
+        assert resp1.status_code == 202
+        job_id = resp1.json()["job_id"]
 
-    assert resp1.status_code == 500
-    data1 = resp1.json()
-    assert data1["detail"] == "An internal error occurred. Please try again later."
-    assert "secret_db_pw" not in resp1.text
+        poll1 = None
+        for _ in range(100):
+            poll1 = await client.get(f"/api/learn/{job_id}")
+            if poll1.json()["status"] in ("failed", "completed"):
+                break
+            await asyncio.sleep(0.05)
+
+    assert poll1 is not None
+    pdata1 = poll1.json()
+    assert pdata1["status"] == "failed"
+    assert pdata1["error"] == "An internal error occurred during pipeline execution."
+    assert "secret_db_pw" not in poll1.text
 
     async def crash_code_request(*args, **kwargs):
         raise RuntimeError("Confidential token leakage: internal_token=xyz999")

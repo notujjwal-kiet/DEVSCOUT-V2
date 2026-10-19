@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     max_understanding_attempts: int = Field(default=5, ge=1)
     attempt_cooldown_seconds: float = Field(default=30.0, ge=0.0)
 
+    # ── Jobs, Security & Session Limits ───────────────────────────
+    pipeline_timeout_seconds: float = Field(default=300.0, ge=1.0)
+    api_keys: str = Field(default="")
+    rate_limit_capacity: float = Field(default=10.0, ge=1.0)
+    rate_limit_refill_rate: float = Field(default=2.0, ge=0.01)
+    max_request_size_bytes: int = Field(default=1_048_576, ge=1024)
+    session_ttl_seconds: float = Field(default=86400.0, ge=1.0)
+    max_sessions: int = Field(default=1000, ge=1)
+
     # ── CORS ──────────────────────────────────────────────────────
     cors_origins: list[str] = Field(
         default=["http://localhost:5173", "http://localhost:3000"]

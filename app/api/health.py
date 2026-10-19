@@ -6,12 +6,14 @@ callers can verify the service is reachable and properly configured.
 """
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.api.auth import verify_api_key_and_rate_limit
 from app.config import get_settings
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key_and_rate_limit)])
+
 
 
 class HealthResponse(BaseModel):

@@ -16,6 +16,8 @@ Cross-cutting: Response Validator & Repair, graceful degradation for optional st
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 import re
 import httpx
@@ -171,6 +173,7 @@ async def run_learning_pipeline(
     github_connector: GitHubConnector | None = None,
     http_client: httpx.AsyncClient | None = None,
     session_store: SessionStore | None = None,
+    on_progress: Callable[[int, str, float], Awaitable[None] | None] | None = None,
 ) -> LearningResponse:
     """
     Run pipeline end-to-end:
@@ -180,7 +183,17 @@ async def run_learning_pipeline(
     cfg = get_settings()
     metrics: list[StageMetrics] = []
 
+    async def _report_stage(stage_id: int, stage_name: str, pct: float) -> None:
+        if on_progress:
+            try:
+                res = on_progress(stage_id, stage_name, pct)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+
     # ── Stage 1: Developer Goal & Skill Context ───────────────────────────────
+    await _report_stage(1, "Stage 1: Developer Goal & Skill Context", 1 / 9)
     goal_text = request.goal.strip()
     goal_title = goal_text.split("\n")[0][:100] if goal_text else "Developer Goal"
     goal_description = goal_text if len(goal_text) >= 10 else f"Learn and implement {goal_text}"
@@ -198,6 +211,7 @@ async def run_learning_pipeline(
         metrics.append(stage1_result.metrics)
 
     # ── Stage 2: Intent & Learning Plan ───────────────────────────────────────
+    await _report_stage(2, "Stage 2: Intent & Learning Plan", 2 / 9)
     depth = (
         "intermediate"
         if request.experience_level == ExperienceLevel.INTERMEDIATE
@@ -221,6 +235,7 @@ async def run_learning_pipeline(
     only_topics: list[str] | None = None
 
     while loop_count <= max_loops:
+        await _report_stage(3, "Stage 3: Research Discovery", 3 / 9)
         stage3_result = await stage3_research.run(
             plan_result=stage2_result,
             loop_count=loop_count,
@@ -249,6 +264,7 @@ async def run_learning_pipeline(
             metrics=stage3_result.metrics,
         )
 
+        await _report_stage(4, "Stage 4: Evidence Review & Validation", 4 / 9)
         evidence_result = await stage4_evidence_validation.run(
             discovery_result=combined_discovery,
             loop_count=loop_count,
@@ -289,6 +305,7 @@ async def run_learning_pipeline(
             break
 
     # ── Stage 5: Explanation & Concept Mapping ────────────────────────────────
+    await _report_stage(5, "Stage 5: Explanation & Concept Mapping", 5 / 9)
     try:
         stage5_result = await stage5_ai_analysis.run(
             evidence_review=evidence_result,
@@ -304,6 +321,7 @@ async def run_learning_pipeline(
         metrics.append(stage5_result.metrics)
 
     # ── Stage 6: Guided Project Work (Optional) ───────────────────────────────
+    await _report_stage(6, "Stage 6: Guided Project Work", 6 / 9)
     stage6_result: GuidedWorkResult | None = None
     try:
         stage6_result = await stage6_recommendation.run(
@@ -316,6 +334,7 @@ async def run_learning_pipeline(
         logger.warning("stage6_failed_degrading_gracefully", error=str(exc))
 
     # ── Stage 7: Understanding Check (2-3 questions with expected_points) ─────
+    await _report_stage(7, "Stage 7: Understanding Check", 7 / 9)
     try:
         stage7_result = await stage7_output_validation.run(
             explanation_result=stage5_result,
@@ -327,6 +346,7 @@ async def run_learning_pipeline(
         stage7_result = _fallback_understanding_check_result(stage5_result)
 
     # ── Stage 8: Code Assistance Gate ─────────────────────────────────────────
+    await _report_stage(8, "Stage 8: Code Assistance Gate", 8 / 9)
     # Default is EXPLAIN; SNIPPET only if hint level / request allows
     wants_snippet = request.wants_snippet
     try:
@@ -348,6 +368,7 @@ async def run_learning_pipeline(
         )
 
     # ── Stage 9: Progress & Reflection (Optional) ─────────────────────────────
+    await _report_stage(9, "Stage 9: Progress & Reflection", 9 / 9)
     progress_record: ProgressRecord | None = None
     try:
         completed_topics = [
