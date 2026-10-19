@@ -416,3 +416,39 @@ async def test_discover_sources_order_preserved_under_concurrency():
     assert sources[1].url == "https://example.com/fast1"
     assert sources[2].url == "https://example.com/fast2"
     assert sources[3].url == "https://example.com/medium"
+
+
+@pytest.mark.asyncio
+async def test_discover_sources_stop_resolving_redirects_at_max_results(monkeypatch):
+    """Verify discover_sources resolves in ordered batches and stops once max_results unique URLs exist."""
+    chunks = [
+        _make_web_chunk(f"https://example.com/page{i}", f"Page {i}", "example.com")
+        for i in range(10)
+    ]
+    mock_resp = _make_mock_response(chunks)
+
+    provider = AsyncMock(spec=GeminiProvider)
+    provider.generate_with_search.return_value = mock_resp
+
+    resolved_uris: list[str] = []
+
+    async def mock_resolve_redirects(url, max_redirects=3, client=None):
+        resolved_uris.append(url)
+        return url
+
+    monkeypatch.setattr("app.research.discovery.resolve_redirects", mock_resolve_redirects)
+
+    sources = await discover_sources(
+        query="batch redirect resolution test",
+        max_results=3,
+        provider=provider,
+    )
+
+    assert len(sources) == 3
+    # Batch size is DISCOVERY_CONCURRENCY (4). Only first batch of 4 is resolved,
+    # remaining 6 chunks (page4 to page9) must not be resolved at all.
+    assert len(resolved_uris) == 4
+    assert "https://example.com/page0" in resolved_uris
+    assert "https://example.com/page3" in resolved_uris
+    assert "https://example.com/page4" not in resolved_uris
+    assert "https://example.com/page9" not in resolved_uris

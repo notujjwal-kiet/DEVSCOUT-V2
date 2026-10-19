@@ -15,7 +15,7 @@ import re
 from typing import Sequence
 from pydantic import BaseModel, Field
 
-from app.config import SUPPORT_TOKEN_OVERLAP_THRESHOLD
+from app.config import get_settings
 from app.models.pipeline import (
     CodeGateLevel,
     Explanation,
@@ -113,7 +113,7 @@ def _build_resource_lookup(
 def validate_explanation(
     explanation: Explanation,
     resources: Sequence[Resource],
-    support_threshold: float = SUPPORT_TOKEN_OVERLAP_THRESHOLD,
+    support_threshold: float | None = None,
 ) -> ValidationReport:
     """
     Validate an Explanation against verified Resources.
@@ -126,6 +126,11 @@ def validate_explanation(
       'weakly_supported' (labeled as a weak signal, not verification).
     - Confidence score must be in [0.0, 1.0].
     """
+    actual_support_threshold = (
+        support_threshold
+        if support_threshold is not None
+        else get_settings().support_token_overlap_threshold
+    )
     issues: list[str] = []
     weakly_supported_sections: list[str] = []
     citations_valid = True
@@ -187,12 +192,12 @@ def validate_explanation(
 
         if cited_excerpts:
             overlap = compute_token_overlap(section.content, cited_excerpts)
-            if overlap < support_threshold:
+            if overlap < actual_support_threshold:
                 section.weakly_supported = True
                 weakly_supported_sections.append(section.title)
                 issues.append(
                     f"Section '{section.title}' (index {idx}) is weakly supported by cited excerpts "
-                    f"(token overlap {overlap:.2f} < {support_threshold:.2f}). [Note: weak signal, not verification]"
+                    f"(token overlap {overlap:.2f} < {actual_support_threshold:.2f}). [Note: weak signal, not verification]"
                 )
             else:
                 section.weakly_supported = False

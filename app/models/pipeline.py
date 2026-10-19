@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.config import MAX_EXCERPT_CHARS
+from app.config import get_settings
 
 
 # ── Identifiers & Timestamps ──────────────────────────────────────────────────
@@ -160,8 +160,9 @@ class Resource(BaseModel):
     @field_validator("excerpt")
     @classmethod
     def _bound_excerpt(cls, v: str) -> str:
-        if v and len(v) > MAX_EXCERPT_CHARS:
-            return v[:MAX_EXCERPT_CHARS]
+        max_chars = get_settings().max_excerpt_chars
+        if v and len(v) > max_chars:
+            return v[:max_chars]
         return v
 
     @property
@@ -424,6 +425,8 @@ class SourceDiscoveryResult(BaseModel):
     goal_id: str
     resources: list[Resource] = Field(default_factory=list)
     loop_count: int = 0
+    degraded: bool = False
+    rate_limited_searches: int = 0
     metrics: StageMetrics | None = None
 
 

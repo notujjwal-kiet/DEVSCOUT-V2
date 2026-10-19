@@ -23,10 +23,42 @@ import httpx
 import structlog
 
 from app.models.pipeline import Resource, ResourceType
+from app.research.cache import ResearchCache, get_research_cache
 from app.research.models import ResearchDocument
 from app.research.scoring import hash_content, normalize
 
 logger = structlog.get_logger(__name__)
+
+
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL for deduplication and caching:
+    - Strips fragment (#...)
+    - Strips tracking query parameters (utm_*, gclid, fbclid)
+    - Strips trailing slash on path (e.g. /path/ -> /path, / -> empty)
+    - Preserves path casing (does NOT lowercase path)
+    - Lowercases scheme and netloc (domain:port)
+    """
+    if not url or not url.strip():
+        return ""
+
+    parsed = urllib.parse.urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/") if parsed.path else ""
+
+    query_params: list[tuple[str, str]] = []
+    if parsed.query:
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            k_lower = k.lower()
+            if k_lower.startswith("utm_") or k_lower in ("gclid", "fbclid"):
+                continue
+            query_params.append((k, v))
+
+    query_params.sort(key=lambda item: item[0])
+    query = urllib.parse.urlencode(query_params)
+
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
 
 # ── Exceptions & Config ────────────────────────────────────────────────────────
 
@@ -400,9 +432,11 @@ async def fetch_page(
     url: str,
     resource_type: ResourceType | str = ResourceType.BLOG,
     client: httpx.AsyncClient | None = None,
+    cache: ResearchCache | None = None,
 ) -> ResearchDocument:
     """
     Fetch web page through SSRF-safe redirect resolver and extract main content:
+    - Checks cache by normalized URL first; returns cached ResearchDocument if present.
     - Resolves redirects safely against SSRF constraints.
     - Enforces 8-10s timeout and 1 MB max body limit (streams and aborts when exceeded).
     - Rejects non-HTML Content-Types (only text/html or application/xhtml+xml allowed).
@@ -411,8 +445,18 @@ async def fetch_page(
     - Collapses whitespace and truncates text to 20,000 characters.
     - Computes content_hash via scoring.normalize + hash_content.
     - Extracts last_updated from meta article:modified_time / article:published_time / <time>.
+    - Caches result in ResearchCache with TTL from Settings.
     - Raises WebFetchError on any error.
     """
+    norm_url = normalize_url(url)
+    cache_key = f"page:{norm_url}"
+    active_cache = cache if cache is not None else get_research_cache()
+
+    if active_cache is not None and norm_url:
+        cached_doc = await active_cache.get(cache_key)
+        if isinstance(cached_doc, ResearchDocument):
+            return cached_doc
+
     try:
         final_url = await resolve_redirects(url, max_redirects=DEFAULT_MAX_REDIRECTS, client=client)
     except Exception as exc:
@@ -501,12 +545,21 @@ async def fetch_page(
             retrieved_at=retrieved_at,
         )
 
-        return ResearchDocument(
+        doc = ResearchDocument(
             resource=resource,
             text=truncated_text,
             last_updated=last_updated,
             popularity=None,
         )
+
+        if active_cache is not None:
+            if norm_url:
+                await active_cache.set(cache_key, doc)
+            norm_final = normalize_url(final_url)
+            if norm_final and norm_final != norm_url:
+                await active_cache.set(f"page:{norm_final}", doc)
+
+        return doc
     finally:
         if owns_client:
             await active_client.aclose()

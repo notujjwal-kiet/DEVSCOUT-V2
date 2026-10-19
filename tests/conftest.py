@@ -4,16 +4,19 @@ import ipaddress
 import socket
 import pytest
 from app.config import get_settings
+from app.research.cache import reset_research_cache
 
 DEFAULT_MOCK_PUBLIC_IP = "93.184.216.34"
 
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    """Reset the lru_cache on get_settings() before/after each test."""
+    """Reset the lru_cache on get_settings() and research cache before/after each test."""
     get_settings.cache_clear()
+    reset_research_cache()
     yield
     get_settings.cache_clear()
+    reset_research_cache()
 
 
 @pytest.fixture(autouse=True)

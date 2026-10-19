@@ -41,3 +41,45 @@ def test_ollama_model_from_env(monkeypatch):
     monkeypatch.setenv("OLLAMA_MODEL", "mistral")
     s = Settings()
     assert s.ollama_model == "mistral"
+
+
+def test_settings_caps_and_evidence_ttl(monkeypatch):
+    """Settings include max_topics_per_run, max_searches_per_run, evidence_cache_ttl_seconds."""
+    s = Settings()
+    assert s.max_topics_per_run >= 1
+    assert s.max_searches_per_run >= 1
+    assert s.evidence_cache_ttl_seconds >= 1
+
+    monkeypatch.setenv("MAX_TOPICS_PER_RUN", "7")
+    monkeypatch.setenv("MAX_SEARCHES_PER_RUN", "25")
+    s2 = Settings()
+    assert s2.max_topics_per_run == 7
+    assert s2.max_searches_per_run == 25
+
+
+def test_no_duplicated_module_level_constants_in_config():
+    """Verify deprecated module-level constants are removed from app.config; consumers read get_settings()."""
+    import app.config as config_mod
+
+    removed_constants = [
+        "MAX_EXCERPT_CHARS",
+        "STAGE5_EXCERPT_BUDGET_CHARS",
+        "STAGE5_TOP_N_RESOURCES",
+        "SUPPORT_TOKEN_OVERLAP_THRESHOLD",
+        "DEFAULT_MIN_DISTINCT_DOMAINS",
+        "DEFAULT_MIN_DISTINCT_SOURCE_TYPES",
+        "DEFAULT_FRESHNESS_STALE_THRESHOLD",
+        "REQUIRE_OFFICIAL_DOCS_OR_REPO",
+        "MIN_SOURCES_PER_TOPIC",
+        "ANSWER_COVERAGE_THRESHOLD",
+    ]
+    for const_name in removed_constants:
+        assert not hasattr(config_mod, const_name), f"{const_name} should not be defined at module level in app.config"
+
+    cfg = get_settings()
+    for const_name in removed_constants:
+        if const_name == "REQUIRE_OFFICIAL_DOCS_OR_REPO":
+            attr_name = "require_official_or_repo"
+        else:
+            attr_name = const_name.lower().removeprefix("default_")
+        assert hasattr(cfg, attr_name), f"Settings should have {attr_name}"

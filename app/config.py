@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     min_distinct_source_types: int = Field(default=2, ge=1)
     require_official_or_repo: bool = Field(default=True)
     freshness_stale_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    max_topics_per_run: int = Field(default=5, ge=1)
+    max_searches_per_run: int = Field(default=15, ge=1)
 
     # ── Excerpts & Evidence Grounding ─────────────────────────────
     max_excerpt_chars: int = Field(default=4000, ge=100)
@@ -82,27 +84,6 @@ class Settings(BaseSettings):
     @classmethod
     def _uppercase_log_level(cls, v: str) -> str:
         return v.upper()
-
-
-# ── Configuration Constants ───────────────────────────────────────────────────
-MAX_EXCERPT_CHARS: int = 4000
-STAGE5_EXCERPT_BUDGET_CHARS: int = 12000
-STAGE5_TOP_N_RESOURCES: int = 3
-SUPPORT_TOKEN_OVERLAP_THRESHOLD: float = 0.15
-ANSWER_COVERAGE_THRESHOLD: float = 0.6
-MIN_QUESTIONS_ANSWERED: int = 2
-MIN_SOURCES_PER_TOPIC: int = 2
-MIN_DISTINCT_DOMAINS: int = 2
-MIN_DISTINCT_SOURCE_TYPES: int = 2
-REQUIRE_OFFICIAL_DOCS_OR_REPO: bool = True
-FRESHNESS_STALE_THRESHOLD: float = 0.5
-MAX_EVIDENCE_RETRY_LOOPS: int = 2
-
-# Backward-compatible aliases
-DEFAULT_MIN_DISTINCT_DOMAINS: int = MIN_DISTINCT_DOMAINS
-DEFAULT_MIN_DISTINCT_SOURCE_TYPES: int = MIN_DISTINCT_SOURCE_TYPES
-DEFAULT_FRESHNESS_STALE_THRESHOLD: float = FRESHNESS_STALE_THRESHOLD
-
 
 
 @lru_cache(maxsize=1)

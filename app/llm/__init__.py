@@ -6,6 +6,7 @@ from app.llm.provider import (
     LLMProvider,
     LLMProviderError,
     OllamaProvider,
+    RateLimitError,
     get_llm_provider,
 )
 
@@ -14,5 +15,6 @@ __all__ = [
     "LLMProvider",
     "LLMProviderError",
     "OllamaProvider",
+    "RateLimitError",
     "get_llm_provider",
 ]

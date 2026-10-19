@@ -490,3 +490,87 @@ async def test_stage3_only_topics_filters_research(monkeypatch):
     assert len(captured_github_queries) == 1
     assert "Topic B" in captured_github_queries[0]
 
+
+@pytest.mark.asyncio
+async def test_stage3_max_topics_per_run_cap(monkeypatch):
+    """Stage 3 caps extracted topics by get_settings().max_topics_per_run."""
+    monkeypatch.setenv("MAX_TOPICS_PER_RUN", "2")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    captured_topics: list[str] = []
+
+    async def mock_discover(query, max_results=5, provider=None, http_client=None):
+        return []
+
+    async def mock_search_repos(self, query, limit=3):
+        captured_topics.append(query)
+        return []
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repos)
+
+    plan_result = _make_plan_result(["Topic 1", "Topic 2", "Topic 3", "Topic 4"])
+    result = await stage3_research.run(plan_result)
+
+    assert isinstance(result, SourceDiscoveryResult)
+    # Only 2 topics should have been queried
+    assert len(captured_topics) == 2
+    assert "Topic 1 examples" in captured_topics
+    assert "Topic 2 examples" in captured_topics
+
+
+@pytest.mark.asyncio
+async def test_stage3_max_searches_per_run_cap(monkeypatch):
+    """Stage 3 caps total discovery and GitHub queries by get_settings().max_searches_per_run."""
+    monkeypatch.setenv("MAX_SEARCHES_PER_RUN", "3")
+    from app.config import get_settings
+    get_settings.cache_clear()
+
+    discover_calls = 0
+    github_calls = 0
+
+    async def mock_discover(query, max_results=5, provider=None, http_client=None):
+        nonlocal discover_calls
+        discover_calls += 1
+        return []
+
+    async def mock_github(self, query, limit=3):
+        nonlocal github_calls
+        github_calls += 1
+        return []
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_github)
+
+    plan_result = _make_plan_result(["Topic A", "Topic B"])
+    # 2 topics normally have 6 discovery + 2 github = 8 searches. With cap=3, only 3 run.
+    result = await stage3_research.run(plan_result)
+
+    assert isinstance(result, SourceDiscoveryResult)
+    assert discover_calls + github_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_stage3_rate_limited_searches_exposed_and_degraded(monkeypatch):
+    """Stage 3 counts rate-limited searches and exposes degraded=True on SourceDiscoveryResult."""
+    from app.llm.provider import RateLimitError
+
+    async def mock_discover_rate_limited(query, max_results=5, provider=None, http_client=None):
+        raise RateLimitError("Gemini API rate limit exceeded (HTTP 429)")
+
+    async def mock_github(self, query, limit=3):
+        return []
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_rate_limited)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_github)
+
+    plan_result = _make_plan_result(["Topic A"])
+    result = await stage3_research.run(plan_result)
+
+    assert isinstance(result, SourceDiscoveryResult)
+    # 3 discovery searches failed with RateLimitError
+    assert result.rate_limited_searches == 3
+    assert result.degraded is True
+
+

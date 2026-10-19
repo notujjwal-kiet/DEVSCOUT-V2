@@ -6,12 +6,13 @@ single-retry error reflection, and typed error handling.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import TypeVar
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import structlog
 
-from app.llm.provider import GeminiProvider, LLMProviderError
+from app.llm.provider import GeminiProvider, LLMProviderError, RateLimitError
 
 logger = structlog.get_logger(__name__)
 
@@ -20,6 +21,18 @@ T = TypeVar("T", bound=BaseModel)
 
 class StructuredOutputError(LLMProviderError):
     """Raised when structured output generation fails schema validation after retry."""
+
+
+def is_parse_or_validation_error(exc: Exception) -> bool:
+    """Return True only if exc is a parse or schema/output validation error."""
+    if isinstance(exc, RateLimitError):
+        return False
+    if isinstance(exc, LLMProviderError):
+        msg = str(exc).lower()
+        return "json" in msg or "parse" in msg or "validation" in msg
+    if isinstance(exc, (ValidationError, json.JSONDecodeError, ValueError)):
+        return True
+    return False
 
 
 async def generate_structured_with_retry(
@@ -32,9 +45,9 @@ async def generate_structured_with_retry(
 ) -> T:
     """
     Generate structured output adhering to schema using GeminiProvider.
-    If the first attempt fails validation or JSON parsing:
-    - Retries once with the validation error appended to the prompt.
-    - If the retry fails, raises StructuredOutputError.
+    Retries once ONLY on parse or validation errors with the error appended to the prompt.
+    Non-parse/validation errors (e.g. RateLimitError, network, auth) are re-raised immediately without retrying.
+    If the retry fails, raises StructuredOutputError.
     """
     try:
         result = await provider.generate_structured(
@@ -49,6 +62,9 @@ async def generate_structured_with_retry(
                 raise ValueError(f"Output validation failed: {err_msg}")
         return result
     except Exception as first_exc:
+        if not is_parse_or_validation_error(first_exc):
+            raise first_exc
+
         logger.warning(
             "structured_output_first_attempt_failed",
             schema=schema.__name__,
@@ -73,6 +89,9 @@ async def generate_structured_with_retry(
                     raise ValueError(f"Output validation failed on retry: {err_msg}")
             return retry_result
         except Exception as retry_exc:
+            if isinstance(retry_exc, RateLimitError):
+                raise retry_exc
+
             logger.error(
                 "structured_output_retry_failed",
                 schema=schema.__name__,

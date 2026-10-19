@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import structlog
 
-from app.config import ANSWER_COVERAGE_THRESHOLD
+from app.config import get_settings
 from app.models.pipeline import (
     AnswerSubmission,
     ExplanationResult,
@@ -30,8 +30,9 @@ STAGE_NAME = "Understanding Check"
 def evaluate_question_answer(
     answer: str,
     expected_points: list[str],
-    threshold: float = ANSWER_COVERAGE_THRESHOLD,
+    threshold: float | None = None,
 ) -> tuple[bool, float, list[str]]:
+    actual_threshold = threshold if threshold is not None else get_settings().answer_coverage_threshold
     """
     Evaluate a learner answer against expected points deterministically.
 
@@ -62,14 +63,14 @@ def evaluate_question_answer(
             missing_points.append(point)
 
     coverage = covered_points / len(expected_points)
-    passed = coverage >= threshold
+    passed = coverage >= actual_threshold
     return passed, coverage, missing_points
 
 
 def evaluate_answers(
     answers: list[AnswerSubmission],
     questions: list[UnderstandingQuestion],
-    threshold: float = ANSWER_COVERAGE_THRESHOLD,
+    threshold: float | None = None,
 ) -> list[UnderstandingResult]:
     """
     Evaluate multiple question answers against session questions deterministically.

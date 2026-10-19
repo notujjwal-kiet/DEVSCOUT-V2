@@ -498,10 +498,10 @@ def test_cited_but_unrelated_content_flagged_weakly_supported():
 
 
 def test_resource_excerpt_truncation_and_serialization_exclusion():
-    """Resource excerpt is truncated to MAX_EXCERPT_CHARS and excluded from model_dump()."""
-    from app.config import MAX_EXCERPT_CHARS
+    from app.config import get_settings
 
-    long_excerpt = "a" * (MAX_EXCERPT_CHARS + 1500)
+    max_excerpt_chars = get_settings().max_excerpt_chars
+    long_excerpt = "a" * (max_excerpt_chars + 1500)
     res = Resource(
         resource_id="res-long",
         url="https://example.com/long",
@@ -514,7 +514,7 @@ def test_resource_excerpt_truncation_and_serialization_exclusion():
     )
 
     # Truncated in model
-    assert len(res.excerpt) == MAX_EXCERPT_CHARS
+    assert len(res.excerpt) == max_excerpt_chars
 
     # Excluded when serialized to dict / JSON
     dumped = res.model_dump()
@@ -687,4 +687,55 @@ async def test_stage5_iterates_over_multiple_topics_from_milestones():
     # Check that both topics appear in the prompt
     assert "Topic: Redis Sharding" in prompt
     assert "Topic: FastAPI API Layer" in prompt
+
+
+@pytest.mark.asyncio
+async def test_structured_llm_retries_only_on_validation_errors():
+    """generate_structured_with_retry retries once on parse/validation errors, but never on RateLimitError or network error."""
+    from app.llm.provider import RateLimitError, LLMProviderError
+    from app.pipeline.structured_llm import generate_structured_with_retry
+    from pydantic import BaseModel
+
+    class DummyModel(BaseModel):
+        ans: str
+
+    # Case 1: RateLimitError -> Must NOT retry, raises immediately
+    rate_limit_mock = AsyncMock()
+    rate_limit_mock.generate_structured.side_effect = RateLimitError("429 Quota exhausted")
+
+    with pytest.raises(RateLimitError):
+        await generate_structured_with_retry(
+            provider=rate_limit_mock,
+            prompt="Test prompt",
+            schema=DummyModel,
+        )
+    assert rate_limit_mock.generate_structured.await_count == 1
+
+    # Case 2: Generic network error -> Must NOT retry
+    net_mock = AsyncMock()
+    net_mock.generate_structured.side_effect = LLMProviderError("Connection reset by peer")
+
+    with pytest.raises(LLMProviderError, match="Connection reset"):
+        await generate_structured_with_retry(
+            provider=net_mock,
+            prompt="Test prompt",
+            schema=DummyModel,
+        )
+    assert net_mock.generate_structured.await_count == 1
+
+    # Case 3: Validation / ValueError -> Retries once with correction prompt
+    val_mock = AsyncMock()
+    val_mock.generate_structured.side_effect = [
+        ValueError("Schema validation failed: missing field"),
+        DummyModel(ans="corrected"),
+    ]
+
+    result = await generate_structured_with_retry(
+        provider=val_mock,
+        prompt="Test prompt",
+        schema=DummyModel,
+    )
+    assert result.ans == "corrected"
+    assert val_mock.generate_structured.await_count == 2
+
 

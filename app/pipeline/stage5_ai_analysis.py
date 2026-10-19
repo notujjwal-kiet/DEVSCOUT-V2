@@ -10,10 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import structlog
 
-from app.config import (
-    STAGE5_EXCERPT_BUDGET_CHARS,
-    STAGE5_TOP_N_RESOURCES,
-)
+from app.config import get_settings
 from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
     EvidenceReviewResult,
@@ -65,9 +62,9 @@ async def run(
     plan_result: IntentPlanResult,
     provider: GeminiProvider | None = None,
     auto_repair: bool = True,
-    top_n: int = STAGE5_TOP_N_RESOURCES,
+    top_n: int | None = None,
     top_n_resources: int | None = None,
-    excerpt_budget: int = STAGE5_EXCERPT_BUDGET_CHARS,
+    excerpt_budget: int | None = None,
 ) -> ExplanationResult:
     """
     Stage 5 entry point: Generate concept map and explanation with source citations
@@ -75,8 +72,19 @@ async def run(
     Iterates over milestones/topics from the plan. For each topic, includes top-N
     Resources by evidence_score WITH excerpts in the prompt, respecting excerpt_budget.
     """
-    if top_n_resources is not None:
-        top_n = top_n_resources
+    cfg = get_settings()
+    effective_top_n = (
+        top_n_resources
+        if top_n_resources is not None
+        else (top_n if top_n is not None else cfg.stage5_top_n_resources)
+    )
+    effective_budget = (
+        excerpt_budget
+        if excerpt_budget is not None
+        else cfg.stage5_excerpt_budget_chars
+    )
+    top_n = effective_top_n
+    excerpt_budget = effective_budget
 
     started_at = datetime.now(UTC)
 

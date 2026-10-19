@@ -16,12 +16,18 @@ import structlog
 
 from app.llm.provider import GeminiProvider
 from app.models.pipeline import ResourceType
+from app.research.cache import ResearchCache, get_research_cache
 from app.research.models import DiscoveredSource
-from app.research.web_fetch import resolve_redirects
+from app.research.web_fetch import normalize_url, resolve_redirects
 
 logger = structlog.get_logger(__name__)
 
 DISCOVERY_CONCURRENCY: int = 4
+
+
+def normalize_query(query: str) -> str:
+    """Normalize query for caching: strip, lowercase, collapse internal whitespace."""
+    return " ".join(query.strip().lower().split())
 
 # ── Domain to ResourceType Mapping Configuration ──────────────────────────────
 
@@ -46,38 +52,6 @@ KNOWN_DOCS_DOMAINS: set[str] = {
     "nodejs.org",
     "peps.python.org",
 }
-
-
-def normalize_url(url: str) -> str:
-    """
-    Normalize URL for deduplication:
-    - Strips fragment (#...)
-    - Strips tracking query parameters (utm_*, gclid, fbclid)
-    - Strips trailing slash on path (e.g. /path/ -> /path, / -> empty)
-    - Preserves path casing (does NOT lowercase path)
-    - Lowercases scheme and netloc (domain:port)
-    """
-    if not url or not url.strip():
-        return ""
-
-    parsed = urllib.parse.urlsplit(url.strip())
-    scheme = parsed.scheme.lower()
-    netloc = parsed.netloc.lower()
-    path = parsed.path.rstrip("/") if parsed.path else ""
-
-    # Filter tracking query parameters
-    query_params: list[tuple[str, str]] = []
-    if parsed.query:
-        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
-            k_lower = k.lower()
-            if k_lower.startswith("utm_") or k_lower in ("gclid", "fbclid"):
-                continue
-            query_params.append((k, v))
-
-    query_params.sort(key=lambda item: item[0])
-    query = urllib.parse.urlencode(query_params)
-
-    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
 
 
 def infer_source_type_hint(url: str, domain: str) -> ResourceType:
@@ -122,20 +96,32 @@ async def discover_sources(
     max_results: int = 8,
     provider: GeminiProvider | None = None,
     http_client: httpx.AsyncClient | None = None,
+    cache: ResearchCache | None = None,
 ) -> list[DiscoveredSource]:
     """
     Discover sources relevant to query using Gemini with Google Search grounding.
+    - Checks cache by normalized query first.
     - Plain text call with google_search tool (no JSON response_schema).
     - Extracts web URIs from grounding_metadata.grounding_chunks.
-    - Resolves chunks concurrently using asyncio.gather with a semaphore of DISCOVERY_CONCURRENCY.
-    - Preserves original chunk order.
+    - Resolves chunks in ordered batches (size DISCOVERY_CONCURRENCY) and stops resolving
+      once max_results unique URLs exist.
     - Drops failed redirect resolutions.
-    - Deduplicates on normalized URL (strips fragment, tracking params, trailing slash, keeps path casing).
+    - Deduplicates on normalized URL.
     - Infers source_type_hint and caps results at max_results.
+    - Stores discovered sources in cache.
     - Returns [] and logs a warning on missing grounding metadata.
     """
     if not query or not query.strip():
         return []
+
+    norm_query = normalize_query(query)
+    cache_key = f"discover:{norm_query}"
+    active_cache = cache if cache is not None else get_research_cache()
+
+    if active_cache is not None:
+        cached_result = await active_cache.get(cache_key)
+        if cached_result is not None and isinstance(cached_result, list):
+            return list(cached_result[:max_results])
 
     if provider is None:
         provider = GeminiProvider()
@@ -172,7 +158,6 @@ async def discover_sources(
     if not valid_items:
         return []
 
-    # Resolve chunks concurrently with semaphore, preserving chunk order
     sem = asyncio.Semaphore(DISCOVERY_CONCURRENCY)
 
     async def _resolve_chunk(item: tuple[object, str, str, str]) -> tuple[tuple[object, str, str, str], str | None]:
@@ -193,40 +178,48 @@ async def discover_sources(
                 )
                 return (item, None)
 
-    resolved_items = await asyncio.gather(*[_resolve_chunk(item) for item in valid_items])
-
     seen_normalized_urls: set[str] = set()
     discovered: list[DiscoveredSource] = []
 
-    for item, final_url in resolved_items:
-        if final_url is None:
-            continue
-
-        cleaned_final_url = final_url.strip()
-        norm_url = normalize_url(cleaned_final_url)
-
-        # Deduplicate on normalized URL while keeping order
-        if norm_url in seen_normalized_urls:
-            continue
-        seen_normalized_urls.add(norm_url)
-
-        _, _, raw_title, fallback_domain = item
-
-        # Extract domain
-        parsed = urllib.parse.urlparse(cleaned_final_url)
-        domain = parsed.netloc.split(":")[0].lower() if parsed.netloc else fallback_domain.lower()
-
-        type_hint = infer_source_type_hint(cleaned_final_url, domain)
-
-        source = DiscoveredSource(
-            url=cleaned_final_url,
-            title=raw_title or cleaned_final_url,
-            domain=domain,
-            source_type_hint=type_hint,
-        )
-        discovered.append(source)
-
+    # Stop resolving redirects once max_results unique URLs exist (resolve in ordered batches)
+    batch_size = DISCOVERY_CONCURRENCY
+    for i in range(0, len(valid_items), batch_size):
         if len(discovered) >= max_results:
             break
+        batch = valid_items[i : i + batch_size]
+        resolved_batch = await asyncio.gather(*[_resolve_chunk(item) for item in batch])
+        for item, final_url in resolved_batch:
+            if final_url is None:
+                continue
+
+            cleaned_final_url = final_url.strip()
+            norm_url = normalize_url(cleaned_final_url)
+
+            # Deduplicate on normalized URL while keeping order
+            if norm_url in seen_normalized_urls:
+                continue
+            seen_normalized_urls.add(norm_url)
+
+            _, _, raw_title, fallback_domain = item
+
+            # Extract domain
+            parsed = urllib.parse.urlparse(cleaned_final_url)
+            domain = parsed.netloc.split(":")[0].lower() if parsed.netloc else fallback_domain.lower()
+
+            type_hint = infer_source_type_hint(cleaned_final_url, domain)
+
+            source = DiscoveredSource(
+                url=cleaned_final_url,
+                title=raw_title or cleaned_final_url,
+                domain=domain,
+                source_type_hint=type_hint,
+            )
+            discovered.append(source)
+
+            if len(discovered) >= max_results:
+                break
+
+    if active_cache is not None and discovered:
+        await active_cache.set(cache_key, discovered)
 
     return discovered

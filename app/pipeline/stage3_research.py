@@ -17,7 +17,8 @@ from typing import Sequence
 import httpx
 import structlog
 
-from app.config import MAX_EXCERPT_CHARS
+from app.config import get_settings
+from app.llm.provider import RateLimitError
 from app.models.pipeline import (
     IntentPlanResult,
     Resource,
@@ -52,7 +53,7 @@ BOILERPLATE_PATTERNS = [
 ]
 
 
-def extract_clean_excerpt(text: str, max_chars: int = MAX_EXCERPT_CHARS) -> str:
+def extract_clean_excerpt(text: str, max_chars: int | None = None) -> str:
     """
     Extract a cleaned excerpt of the first relevant content chunk:
     - Drops raw navigation and boilerplate lines (e.g. skip links, breadcrumbs, copyright).
@@ -60,6 +61,8 @@ def extract_clean_excerpt(text: str, max_chars: int = MAX_EXCERPT_CHARS) -> str:
     """
     if not text:
         return ""
+
+    limit = max_chars if max_chars is not None else get_settings().max_excerpt_chars
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     cleaned_chunks: list[str] = []
@@ -73,7 +76,7 @@ def extract_clean_excerpt(text: str, max_chars: int = MAX_EXCERPT_CHARS) -> str:
     if not combined:
         combined = " ".join(text.split()).strip()
 
-    return combined[:max_chars].strip()
+    return combined[:limit].strip()
 
 
 
@@ -132,6 +135,7 @@ async def run(
     - Drops sources whose fetch fails and logs counts per step.
     - Keeps SourceDiscoveryResult as return type without scoring (Stage 4 scores).
     """
+    cfg = get_settings()
     started_at = datetime.now(UTC)
     goal_id = plan_result.plan.goal_id if plan_result.plan else "unknown-goal"
 
@@ -146,6 +150,10 @@ async def run(
     else:
         topics = all_topics
 
+    # Enforce Settings cap on topics per run
+    if len(topics) > cfg.max_topics_per_run:
+        topics = topics[:cfg.max_topics_per_run]
+
     # 1. Build 3 query strings (docs, GitHub examples, community) by template for each topic
     discovery_queries: list[tuple[str, ResourceType, str]] = []
     for topic in topics:
@@ -156,6 +164,8 @@ async def run(
     owns_client = http_client is None
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)
 
+    rate_limited_searches = 0
+
     try:
         # Initialize GitHubConnector if not provided
         gh = github_connector if github_connector is not None else GitHubConnector(client=active_client)
@@ -163,6 +173,7 @@ async def run(
         discovery_sem = asyncio.Semaphore(concurrency)
 
         async def _run_discover(q: str, rtype: ResourceType, topic: str) -> list[_CandidateSource]:
+            nonlocal rate_limited_searches
             async with discovery_sem:
                 try:
                     discovered = await discover_sources(
@@ -180,11 +191,21 @@ async def run(
                         )
                         for ds in discovered
                     ]
+                except RateLimitError as exc:
+                    rate_limited_searches += 1
+                    logger.warning("stage3_discover_sources_rate_limited", query=q, error=str(exc))
+                    return []
                 except Exception as exc:
+                    exc_str = str(exc).lower()
+                    if "429" in exc_str or "quota" in exc_str or "rate limit" in exc_str:
+                        rate_limited_searches += 1
+                        logger.warning("stage3_discover_sources_rate_limited", query=q, error=str(exc))
+                        return []
                     logger.warning("stage3_discover_sources_failed", query=q, error=str(exc))
                     return []
 
         async def _run_github(topic: str) -> list[_CandidateSource]:
+            nonlocal rate_limited_searches
             async with discovery_sem:
                 try:
                     gh_docs = await gh.search_repositories(
@@ -200,14 +221,30 @@ async def run(
                         )
                         for doc in gh_docs
                     ]
+                except RateLimitError as exc:
+                    rate_limited_searches += 1
+                    logger.warning("stage3_github_search_rate_limited", topic=topic, error=str(exc))
+                    return []
                 except Exception as exc:
+                    exc_str = str(exc).lower()
+                    if "429" in exc_str or "rate limit" in exc_str:
+                        rate_limited_searches += 1
+                        logger.warning("stage3_github_search_rate_limited", topic=topic, error=str(exc))
+                        return []
                     logger.warning("stage3_github_search_failed", topic=topic, error=str(exc))
                     return []
 
-        # 2. Run discovery and GitHub queries concurrently bounded by semaphore
-        discovery_tasks = [_run_discover(q, rtype, topic) for q, rtype, topic in discovery_queries]
-        github_tasks = [_run_github(topic) for topic in topics]
-        all_gathered = await asyncio.gather(*discovery_tasks, *github_tasks)
+        # 2. Schedule discovery and GitHub queries bounded by max_searches_per_run
+        max_searches = cfg.max_searches_per_run
+        all_tasks = []
+        for q, rtype, topic in discovery_queries:
+            if len(all_tasks) < max_searches:
+                all_tasks.append(_run_discover(q, rtype, topic))
+        for topic in topics:
+            if len(all_tasks) < max_searches:
+                all_tasks.append(_run_github(topic))
+
+        all_gathered = await asyncio.gather(*all_tasks)
 
         raw_candidates: list[_CandidateSource] = []
         for batch in all_gathered:
@@ -217,8 +254,9 @@ async def run(
             "stage3_step1_sources_discovered",
             goal_id=goal_id,
             topics_count=len(topics),
-            queries_count=len(discovery_queries) + len(topics),
+            queries_count=len(all_tasks),
             raw_discovered_count=len(raw_candidates),
+            rate_limited_searches=rate_limited_searches,
         )
 
         # 3. Merge and dedupe by normalized URL, skipping exclude_urls
@@ -258,7 +296,7 @@ async def run(
                         client=active_client,
                     )
                     res = doc.resource
-                    res.excerpt = extract_clean_excerpt(doc.text, max_chars=MAX_EXCERPT_CHARS)
+                    res.excerpt = extract_clean_excerpt(doc.text, max_chars=cfg.max_excerpt_chars)
                     res.content_hash = hash_content(doc.text)
                     res.last_updated = doc.last_updated
                     res.popularity = doc.popularity
@@ -306,11 +344,15 @@ async def run(
         goal_id=goal_id,
         resource_count=len(resources),
         loop_count=loop_count,
+        rate_limited_searches=rate_limited_searches,
+        degraded=rate_limited_searches > 0,
     )
 
     return SourceDiscoveryResult(
         goal_id=goal_id,
         resources=resources,
         loop_count=loop_count,
+        degraded=rate_limited_searches > 0,
+        rate_limited_searches=rate_limited_searches,
         metrics=metrics,
     )

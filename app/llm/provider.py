@@ -22,6 +22,10 @@ class LLMProviderError(ValueError):
     """Raised when an LLM provider encounters a network, connection, configuration, or execution error."""
 
 
+class RateLimitError(LLMProviderError):
+    """Raised when an LLM provider encounters a 429 rate limit or quota exhaustion error."""
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Protocol defining the LLM provider interface."""
@@ -109,6 +113,10 @@ class OllamaProvider:
                 f"Failed to connect to Ollama host at '{self.host}': {exc}"
             ) from exc
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 or "quota" in exc.response.text.lower():
+                raise RateLimitError(
+                    f"Ollama host '{self.host}' rate limit exceeded (HTTP 429): {exc.response.text}"
+                ) from exc
             raise LLMProviderError(
                 f"Ollama host '{self.host}' returned HTTP {exc.response.status_code}: {exc.response.text}"
             ) from exc
@@ -186,7 +194,7 @@ def _map_gemini_error(exc: Exception, model_name: str) -> LLMProviderError:
         code = getattr(exc, "code", None)
         message = getattr(exc, "message", None) or str(exc)
         if code == 429 or "RESOURCE_EXHAUSTED" in str(exc) or "quota" in str(exc).lower():
-            return LLMProviderError(
+            return RateLimitError(
                 f"Gemini API rate limit exceeded for model '{model_name}': {message}"
             )
         if (
@@ -201,9 +209,22 @@ def _map_gemini_error(exc: Exception, model_name: str) -> LLMProviderError:
         return LLMProviderError(
             f"Gemini API error ({code}) for model '{model_name}': {message}"
         )
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code == 429 or "quota" in exc.response.text.lower():
+            return RateLimitError(
+                f"Gemini API rate limit exceeded (HTTP 429) for model '{model_name}': {exc.response.text}"
+            )
+        return LLMProviderError(
+            f"Gemini HTTP error ({exc.response.status_code}) for model '{model_name}': {exc}"
+        )
     if isinstance(exc, httpx.RequestError):
         return LLMProviderError(
             f"Gemini network error for model '{model_name}': {exc}"
+        )
+    exc_lower = str(exc).lower()
+    if "429" in exc_lower or "quota" in exc_lower or "resource_exhausted" in exc_lower:
+        return RateLimitError(
+            f"Gemini API rate limit exceeded for model '{model_name}': {exc}"
         )
     return LLMProviderError(
         f"Gemini request failed for model '{model_name}': {exc}"

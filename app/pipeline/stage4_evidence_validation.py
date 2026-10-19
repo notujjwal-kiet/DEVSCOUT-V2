@@ -22,15 +22,7 @@ from typing import Sequence
 
 import structlog
 
-from app.config import (
-    DEFAULT_FRESHNESS_STALE_THRESHOLD,
-    DEFAULT_MIN_DISTINCT_DOMAINS,
-    DEFAULT_MIN_DISTINCT_SOURCE_TYPES,
-    MAX_EVIDENCE_RETRY_LOOPS,
-    MIN_SOURCES_PER_TOPIC,
-    REQUIRE_OFFICIAL_DOCS_OR_REPO,
-    get_settings,
-)
+from app.config import get_settings
 from app.models.pipeline import (
     EvidenceReviewResult,
     Resource,
