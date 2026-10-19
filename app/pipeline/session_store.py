@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.models.pipeline import (
     AttemptReview,
     LearningResponse,
+    UnderstandingQuestion,
     UnderstandingResult,
 )
 from app.policy.attempt_review import hash_code
@@ -37,6 +38,10 @@ class SessionData(BaseModel):
     snippet_hashes: list[str] = Field(default_factory=list)
     understanding_results: list[UnderstandingResult] = Field(default_factory=list)
     attempt_reviews: list[AttemptReview] = Field(default_factory=list)
+    understanding_passed: bool = False
+    questions: list[UnderstandingQuestion] = Field(default_factory=list)
+    goal_title: str = ""
+    goal_description: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 
@@ -97,10 +102,13 @@ def get_session_store() -> SessionStore:
 def create_session_from_response(
     response: LearningResponse,
     extra_hashes: list[str] | None = None,
+    questions: list[UnderstandingQuestion] | None = None,
+    goal_title: str = "",
+    goal_description: str = "",
 ) -> SessionData:
     """
     Create a SessionData object from a LearningResponse, computing SHA-256 hashes
-    for all contained code snippets.
+    for all contained code snippets and persisting full questions with expected_points.
     """
     snippet_hashes: list[str] = list(extra_hashes or [])
 
@@ -113,10 +121,30 @@ def create_session_from_response(
     if response.understanding_result:
         understanding_results.append(response.understanding_result)
 
+    full_questions: list[UnderstandingQuestion] = list(questions or [])
+    if not full_questions and response.questions:
+        for q in response.questions:
+            if isinstance(q, UnderstandingQuestion):
+                full_questions.append(q)
+            else:
+                full_questions.append(
+                    UnderstandingQuestion(
+                        question_id=q.question_id,
+                        concept_id=q.concept_id,
+                        question_text=q.question_text,
+                        question_type=q.question_type,
+                        expected_points=getattr(q, "expected_points", []),
+                    )
+                )
+
     return SessionData(
         response_id=response.response_id,
         learning_response=response,
         snippet_hashes=snippet_hashes,
         understanding_results=understanding_results,
         attempt_reviews=[],
+        understanding_passed=False,
+        questions=full_questions,
+        goal_title=goal_title,
+        goal_description=goal_description,
     )

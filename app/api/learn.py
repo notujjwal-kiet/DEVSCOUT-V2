@@ -26,16 +26,18 @@ router = APIRouter()
 async def create_learning_session(request: LearnRequest) -> LearningResponse:
     """
     Run pipeline end-to-end for a given developer goal, skill context, and stack.
-    Returns complete validated LearningResponse.
+    Returns complete validated LearningResponse with expected_points stripped from questions.
     """
     try:
         response = await run_learning_pipeline(request)
-        return response
+        # Req 3: never return expected_points to clients
+        return response.to_public()
     except Exception as exc:
-        logger.error("learn_pipeline_failed", error=str(exc))
+        # Req 5: generic 500 message; log details internally only
+        logger.error("learn_pipeline_failed", error=str(exc), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to execute learning pipeline: {exc}",
+            detail="An internal error occurred. Please try again later.",
         )
 
 
@@ -44,18 +46,21 @@ async def request_code(request: CodeRequest) -> LearningResponse:
     """
     Evaluate submitted answers or attempt code against session questions and snippet hashes.
     Unlocks FULL code if learner readiness criteria are satisfied; otherwise returns REQUIRE_CHECK.
+    Returns response with expected_points stripped from questions.
     """
     try:
         response = await handle_code_request(request)
-        return response
+        # Req 3: never return expected_points to clients
+        return response.to_public()
     except SessionNotFoundError as exc:
         raise HTTPException(
             status_code=404,
             detail=str(exc),
         )
     except Exception as exc:
-        logger.error("code_request_failed", error=str(exc))
+        # Req 5: generic 500 message; log details internally only
+        logger.error("code_request_failed", error=str(exc), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process code request: {exc}",
+            detail="An internal error occurred. Please try again later.",
         )

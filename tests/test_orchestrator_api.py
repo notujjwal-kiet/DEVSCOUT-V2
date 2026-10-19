@@ -157,7 +157,7 @@ def setup_test_environment(monkeypatch):
                     "        self.tokens = capacity\n"
                 ),
                 language="python",
-                explanation="Production-grade token bucket implementation.",
+                explanation="Complete token bucket implementation.",
                 line_by_line_explanation=[
                     "Define TokenBucket class",
                     "Store maximum capacity and replenishment fill rate",
@@ -199,10 +199,12 @@ async def test_full_happy_path_post_api_learn():
     assert data["explanation"] is not None
     assert len(data["explanation"]["sections"]) >= 1
 
-    # 2-3 understanding questions with expected points
+    # 2-3 understanding questions returned but expected_points MUST NOT exist in public questions
     assert len(data["questions"]) in (2, 3)
+    assert "expected_points" not in response.text
     for q in data["questions"]:
-        assert len(q["expected_points"]) >= 1
+        # Req 3: answer key never exposed to API consumers
+        assert "expected_points" not in q, f"expected_points leaked for question {q['question_id']}"
 
     # Default code gate is EXPLAIN
     assert data["code_gate_decision"]["level"] == "EXPLAIN"
@@ -364,6 +366,8 @@ async def test_passing_answers_unlock_full():
     assert data["code_gate_decision"]["level"] == "FULL"
     assert data["full_code"] is not None
     assert "class TokenBucket" in data["full_code"]
+    assert data["code_notice"] == "Generated code, not executed or tested."
+    assert "expected_points" not in response.text
 
     # Section for Complete Implementation added with explanation
     titles = [sec["title"] for sec in data["explanation"]["sections"]]
@@ -469,3 +473,438 @@ async def test_code_gate_violation_blocks_response():
     assert report.is_valid is False
     assert report.code_gate_respected is False
     assert any("No code may be returned under EXPLAIN" in issue for issue in report.issues)
+
+
+# ── Test 8: 1-of-3 Answers Does Not Pass ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_one_of_three_answers_does_not_pass():
+    """Answering only 1 question when session has 2-3 questions must NOT pass the understanding check."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+    assert len(questions) >= 2
+
+    # Provide high-quality answer for ONLY the first question
+    q1 = questions[0]
+    answers = [
+        {
+            "question_id": q1.question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        }
+    ]
+
+    payload = {
+        "response_id": resp_id,
+        "wants_full_code": True,
+        "answers": answers,
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # 1 of 3 (or 1 of 2) answers must NOT pass
+    assert data["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert data["full_code"] is None
+
+    # Session store must reflect understanding check did NOT pass
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert session.understanding_passed is False
+
+
+# ── Test 9: Two-Step Flow ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_two_step_flow_persists_readiness_and_unlocks_full():
+    """Submit passing answers with wants_full_code=false, then request full code with no answers -> FULL."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+    assert len(questions) >= 2
+
+    passing_answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": (
+                "The readiness gate forces active recall and implementation attempts first, "
+                "which verifies conceptual understanding before code assistance."
+            ),
+        },
+    ]
+
+    # Step 1: Submit passing answers with wants_full_code=false
+    step1_payload = {
+        "response_id": resp_id,
+        "wants_full_code": False,
+        "answers": passing_answers,
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        step1_resp = await client.post("/api/code-request", json=step1_payload)
+
+    assert step1_resp.status_code == 200
+    step1_data = step1_resp.json()
+    assert step1_data["code_gate_decision"]["level"] == "EXPLAIN"
+    assert step1_data["full_code"] is None
+
+    # Verify understanding_passed is persisted in SessionData
+    store = get_session_store()
+    session_after_step1 = await store.get(resp_id)
+    assert session_after_step1 is not None
+    assert session_after_step1.understanding_passed is True
+
+    # Step 2: Request full code with wants_full_code=true and NO answers
+    step2_payload = {
+        "response_id": resp_id,
+        "wants_full_code": True,
+        "answers": [],
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        step2_resp = await client.post("/api/code-request", json=step2_payload)
+
+    assert step2_resp.status_code == 200
+    step2_data = step2_resp.json()
+    assert step2_data["code_gate_decision"]["level"] == "FULL"
+    assert step2_data["full_code"] is not None
+    assert "class TokenBucket" in step2_data["full_code"]
+    assert step2_data["code_notice"] == "Generated code, not executed or tested."
+
+
+# ── Test 10: Wrong Answer Fails Understanding Check ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_wrong_answer_fails_understanding_check():
+    """Submitting answers where any answer fails coverage must NOT pass."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+
+    # One good answer, one completely wrong answer
+    answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": "Banana potato orange nonsense completely irrelevant.",
+        },
+    ]
+
+    payload = {
+        "response_id": resp_id,
+        "wants_full_code": True,
+        "answers": answers,
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert data["full_code"] is None
+
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert session.understanding_passed is False
+
+
+# ── Test 11: No Answers on Fresh Session ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_no_answers_returns_require_check():
+    """Requesting full code with no answers on fresh session returns REQUIRE_CHECK."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+
+    payload = {
+        "response_id": resp_id,
+        "wants_full_code": True,
+        "answers": [],
+    }
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert data["full_code"] is None
+
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert session.understanding_passed is False
+
+
+# ── Test 12: Expected Points Never Leaked to Client ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_expected_points_leak_check():
+    """The raw JSON of /api/learn and /api/code-request contains no 'expected_points'."""
+    # 1. Check /api/learn response
+    payload = {
+        "goal": "Build a Distributed Rate Limiter",
+        "experience_level": "intermediate",
+        "tech_stack": ["Python"],
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        learn_resp = await client.post("/api/learn", json=payload)
+
+    assert learn_resp.status_code == 200
+    assert "expected_points" not in learn_resp.text
+    learn_data = learn_resp.json()
+    assert len(learn_data["questions"]) >= 1
+    for q in learn_data["questions"]:
+        assert "expected_points" not in q
+
+    resp_id = learn_data["response_id"]
+
+    # Verify expected_points IS kept internally in SessionData
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert len(session.questions) >= 1
+    for q in session.questions:
+        assert len(q.expected_points) >= 1, "Answer key must be preserved in SessionData"
+
+    # 2. Check /api/code-request response
+    code_payload = {
+        "response_id": resp_id,
+        "wants_full_code": False,
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        code_resp = await client.post("/api/code-request", json=code_payload)
+
+    assert code_resp.status_code == 200
+    assert "expected_points" not in code_resp.text
+    code_data = code_resp.json()
+    for q in code_data["questions"]:
+        assert "expected_points" not in q
+
+
+# ── Test 13: Python AST Parse Retry and Error ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_python_code_ast_parse_retry_succeeds(monkeypatch):
+    """If generated Python code has syntax error, retry once; if retry succeeds, return valid code."""
+    attempts = 0
+
+    async def fake_retry_generate(self, prompt, schema, system_prompt=None):
+        nonlocal attempts
+        if schema == FullCodeSolution:
+            attempts += 1
+            if attempts == 1:
+                # Syntax error on first try
+                return FullCodeSolution(
+                    code="def invalid syntax here ( broken",
+                    language="python",
+                    explanation="Attempt 1 with syntax error.",
+                    line_by_line_explanation=["broken line"],
+                )
+            else:
+                # Valid code on retry
+                return FullCodeSolution(
+                    code="class TokenBucketFixed:\n    pass\n",
+                    language="python",
+                    explanation="Attempt 2 valid code.",
+                    line_by_line_explanation=["Fixed class"],
+                )
+        if schema == LearningPlan:
+            return LearningPlan(
+                goal_id="g1",
+                milestones=[Milestone(title="Milestone 1", description="Description 1", target_outcome="Outcome 1")],
+            )
+        from app.models.pipeline import ExplanationResult
+        if schema == ExplanationResult:
+            return ExplanationResult(
+                explanation=Explanation(
+                    topic="Topic",
+                    summary="Summary",
+                    sections=[ExplanationSection(title="T", content="Content", citation_resource_ids=["res-docs-1"])],
+                )
+            )
+        raise ValueError(f"Unexpected schema: {schema}")
+
+    monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_retry_generate)
+
+    init_request = LearnRequest(goal="Rate Limiter", tech_stack=["Python"])
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+
+    passing_answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": (
+                "The readiness gate forces active recall and implementation attempts first, "
+                "which verifies conceptual understanding before code assistance."
+            ),
+        },
+    ]
+
+    payload = {"response_id": resp_id, "wants_full_code": True, "answers": passing_answers}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["code_gate_decision"]["level"] == "FULL"
+    assert "class TokenBucketFixed" in data["full_code"]
+    assert data["code_notice"] == "Generated code, not executed or tested."
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_python_code_ast_parse_retry_fails_cleanly(monkeypatch):
+    """If generated Python code has syntax error and retry also fails, handle_code_request fails clearly."""
+    async def fake_always_broken(self, prompt, schema, system_prompt=None):
+        if schema == FullCodeSolution:
+            return FullCodeSolution(
+                code="def permanently broken (",
+                language="python",
+                explanation="Broken code.",
+                line_by_line_explanation=["broken line"],
+            )
+        if schema == LearningPlan:
+            return LearningPlan(
+                goal_id="g1",
+                milestones=[Milestone(title="Milestone 1", description="Description 1", target_outcome="Outcome 1")],
+            )
+        from app.models.pipeline import ExplanationResult
+        if schema == ExplanationResult:
+            return ExplanationResult(
+                explanation=Explanation(
+                    topic="Topic",
+                    summary="Summary",
+                    sections=[ExplanationSection(title="T", content="Content", citation_resource_ids=["res-docs-1"])],
+                )
+            )
+        raise ValueError(f"Unexpected schema: {schema}")
+
+    monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_always_broken)
+
+    init_request = LearnRequest(goal="Rate Limiter", tech_stack=["Python"])
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+
+    passing_answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": (
+                "The readiness gate forces active recall and implementation attempts first, "
+                "which verifies conceptual understanding before code assistance."
+            ),
+        },
+    ]
+
+    # When called via API, returns generic 500 error
+    payload = {"response_id": resp_id, "wants_full_code": True, "answers": passing_answers}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "An internal error occurred. Please try again later."
+
+
+# ── Test 14: Generic 500 Message on Internal Server Error ─────────────────────
+
+@pytest.mark.asyncio
+async def test_generic_500_message_on_internal_error(monkeypatch):
+    """Both /api/learn and /api/code-request return generic message on 500 without leaking exception internals."""
+    async def crash_pipeline(*args, **kwargs):
+        raise RuntimeError("Confidential database connection failed: secret_db_pw=12345")
+
+    monkeypatch.setattr("app.api.learn.run_learning_pipeline", crash_pipeline)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp1 = await client.post("/api/learn", json={"goal": "Crashing test"})
+
+    assert resp1.status_code == 500
+    data1 = resp1.json()
+    assert data1["detail"] == "An internal error occurred. Please try again later."
+    assert "secret_db_pw" not in resp1.text
+
+    async def crash_code_request(*args, **kwargs):
+        raise RuntimeError("Confidential token leakage: internal_token=xyz999")
+
+    monkeypatch.setattr("app.api.learn.handle_code_request", crash_code_request)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp2 = await client.post("/api/code-request", json={"response_id": "any-id", "wants_full_code": True})
+
+    assert resp2.status_code == 500
+    data2 = resp2.json()
+    assert data2["detail"] == "An internal error occurred. Please try again later."
+    assert "internal_token" not in resp2.text
+

@@ -23,6 +23,7 @@ import structlog
 from app.config import get_settings
 from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
+    AttemptStatus,
     CodeGateDecision,
     CodeGateLevel,
     CodeGateResult,
@@ -331,6 +332,8 @@ async def run_learning_pipeline(
     except Exception as exc:
         logger.warning("stage9_failed_degrading_gracefully", error=str(exc))
 
+    raw_questions = stage7_result.questions if stage7_result else []
+
     # ── Assemble LearningResponse ─────────────────────────────────────────────
     response = LearningResponse(
         learner_profile=stage1_result.profile,
@@ -340,7 +343,7 @@ async def run_learning_pipeline(
         snippets=stage8_result.allowed_snippets,
         concept_nodes=stage5_result.concept_nodes,
         concept_edges=stage5_result.concept_edges,
-        questions=stage7_result.questions if stage7_result else [],
+        questions=raw_questions,
         understanding_result=(
             stage7_result.results[0]
             if (stage7_result and stage7_result.results)
@@ -365,7 +368,12 @@ async def run_learning_pipeline(
 
     # ── Persist to SessionStore ───────────────────────────────────────────────
     store = session_store or get_session_store()
-    session = create_session_from_response(response)
+    session = create_session_from_response(
+        response,
+        questions=raw_questions,
+        goal_title=goal_title,
+        goal_description=goal_description,
+    )
     await store.save(session)
 
     return response
@@ -379,11 +387,12 @@ async def handle_code_request(
     """
     Handle POST /api/code-request:
     - Look up session by response_id (or raise SessionNotFoundError).
-    - Evaluate answers DETERMINISTICALLY using normalized token match against expected_points.
-    - Review attempt_code against session's snippet hashes.
-    - Build LearnerReadiness and evaluate Stage 8 Code Gate.
-    - If level is FULL: make one structured Gemini call for full code + explanation,
-      validate, and return it.
+    - Req 1: Evaluate answers requiring ALL questions answered (or min_questions_answered),
+      every answer must meet the coverage threshold.
+    - Req 2: Persist understanding_passed in session; build LearnerReadiness from
+      session state (passed check OR any ACCEPTABLE attempt review in history).
+    - If level is FULL: generate code grounded in learner goal/project/milestones/stack,
+      validate Python with ast.parse (retry once on failure), set code_notice.
     - Otherwise: return REQUIRE_CHECK with reasons and questions.
     """
     store = session_store or get_session_store()
@@ -393,21 +402,52 @@ async def handle_code_request(
 
     cfg = get_settings()
 
-    # 1. Deterministic Answer Evaluation (Heuristic)
-    understanding_check_passed = False
+    # ── Req 1 & 2: Deterministic Answer Evaluation ────────────────────────────
     if request.answers:
+        questions_to_eval = session.questions if session.questions else session.learning_response.questions
         eval_results = evaluate_answers(
             answers=request.answers,
-            questions=session.learning_response.questions,
+            questions=questions_to_eval,
             threshold=cfg.answer_coverage_threshold,
         )
         session.understanding_results.extend(eval_results)
         if eval_results:
             session.learning_response.understanding_result = eval_results[-1]
-            # Passed if all submitted answers met coverage threshold
-            understanding_check_passed = all(r.passed for r in eval_results)
 
-    # 2. Attempt Code Review
+        # Map each answered question to its latest evaluation result in this session
+        latest_by_qid: dict[str, UnderstandingResult] = {}
+        for r in session.understanding_results:
+            latest_by_qid[r.question_id] = r
+
+        answered_count = len(latest_by_qid)
+        total_questions = len(questions_to_eval)
+        all_passed = (
+            len(latest_by_qid) > 0
+            and all(r.passed for r in latest_by_qid.values())
+        )
+        meets_minimum = (
+            (answered_count >= total_questions and total_questions > 0)
+            or answered_count >= cfg.min_questions_answered
+        )
+        if meets_minimum and all_passed:
+            session.understanding_passed = True
+            logger.info(
+                "understanding_check_passed",
+                answered=answered_count,
+                required=cfg.min_questions_answered,
+                total=total_questions,
+            )
+        else:
+            session.understanding_passed = False
+            logger.info(
+                "understanding_check_failed",
+                answered=answered_count,
+                required=cfg.min_questions_answered,
+                total=total_questions,
+                all_passed=all_passed,
+            )
+
+    # ── Req 2: Attempt Code Review ────────────────────────────────────────────
     attempt_review_res = None
     if request.attempt_code:
         attempt_review_res = review_attempt(
@@ -417,13 +457,20 @@ async def handle_code_request(
         )
         session.attempt_reviews.append(attempt_review_res)
 
-    # 3. Build LearnerReadiness
+    # ── Req 2: Build LearnerReadiness from session state (not just current request) ──
+    # understanding_passed comes from the persisted session flag (survives between calls)
+    # attempt_review comes from any ACCEPTABLE attempt ever submitted in this session
+    session_understanding_passed = session.understanding_passed
+    session_acceptable_attempt = next(
+        (r for r in session.attempt_reviews if r.status == AttemptStatus.ACCEPTABLE),
+        None,
+    )
     readiness = LearnerReadiness(
-        understanding_check_passed=understanding_check_passed,
-        attempt_review=attempt_review_res,
+        understanding_check_passed=session_understanding_passed,
+        attempt_review=session_acceptable_attempt or attempt_review_res,
     )
 
-    # 4. Call Stage 8 Code Gate
+    # ── Stage 8 Code Gate ─────────────────────────────────────────────────────
     gate_result = await stage8_decision_report.run(
         explicit_request=request.wants_full_code,
         wants_full_code=request.wants_full_code,
@@ -431,31 +478,47 @@ async def handle_code_request(
         has_explanation=True,
     )
 
-    # 5. Handle Gate Outcomes
+    # ── Req 4: Full Code Generation ────────────────────────────────────────────
     if gate_result.decision.level == CodeGateLevel.FULL:
         if provider is None:
             provider = GeminiProvider()
 
-        topic = (
-            session.learning_response.explanation.topic
-            if session.learning_response.explanation
-            else "Implementation"
+        lr = session.learning_response
+        topic = lr.explanation.topic if lr.explanation else "Implementation"
+        goal_title = (
+            session.goal_title
+            or (lr.learning_plan.milestones[0].title if (lr.learning_plan and lr.learning_plan.milestones) else "")
+            or topic
         )
-        tech_stack = ", ".join(session.learning_response.learner_profile.tech_stack) or "Python"
+        goal_desc = (
+            session.goal_description
+            or (lr.learning_plan.milestones[0].description if (lr.learning_plan and lr.learning_plan.milestones) else "")
+        )
+        milestones_text = ""
+        if lr.learning_plan and lr.learning_plan.milestones:
+            ms_items = "\n".join(
+                f"  - {m.title}: {m.target_outcome}" for m in lr.learning_plan.milestones
+            )
+            milestones_text = f"\nMilestones:\n{ms_items}"
+        tech_stack = ", ".join(lr.learner_profile.tech_stack) or "Python"
+        current_project = lr.learner_profile.current_project or "personal project"
 
+        # Req 4: no "verified" or "production-grade" in prompt
         prompt = (
-            f"You are a principal software engineer. The learner has demonstrated readiness.\n"
-            f"Provide the complete, verified, runnable implementation for:\n"
-            f"Topic: {topic}\n"
-            f"Tech Stack: {tech_stack}\n\n"
+            f"You are a principal software engineer mentoring a developer.\n"
+            f"Goal: {goal_title}\n"
+            f"Description: {goal_desc}\n"
+            f"Current project: {current_project}\n"
+            f"Tech stack: {tech_stack}{milestones_text}\n\n"
+            f"Provide a complete, runnable implementation for the goal above.\n"
             f"Requirements:\n"
-            f"1. Complete, production-grade, runnable code.\n"
-            f"2. Comprehensive pedagogical explanation of the architecture.\n"
+            f"1. Complete, well-structured, runnable code with clear docstrings.\n"
+            f"2. Comprehensive explanation of the architecture and design decisions.\n"
             f"3. Line-by-line explanation of key implementation details.\n"
         )
         system_prompt = (
-            "You are an expert technical mentor. Generate production-grade code with in-depth "
-            "architectural and line-by-line explanations. Adhere strictly to the requested schema."
+            "You are an expert technical mentor. Generate complete, well-structured code with "
+            "in-depth architectural and line-by-line explanations. Adhere strictly to the requested schema."
         )
 
         solution = await generate_structured_with_retry(
@@ -465,7 +528,40 @@ async def handle_code_request(
             system_prompt=system_prompt,
         )
 
-        session.learning_response.full_code = solution.code
+        # Req 4: For Python output, validate with ast.parse; retry once on failure
+        code_to_use = solution.code
+        if solution.language.lower() == "python":
+            import ast as _ast
+
+            try:
+                _ast.parse(code_to_use)
+            except SyntaxError as syn_err:
+                logger.warning("ast_parse_failed_retrying", error=str(syn_err))
+                retry_prompt = (
+                    f"{prompt}\n\n"
+                    f"The previous attempt had a Python syntax error: {syn_err}\n"
+                    f"Fix it and return valid, parseable Python code."
+                )
+                try:
+                    retry_solution = await generate_structured_with_retry(
+                        provider=provider,
+                        prompt=retry_prompt,
+                        schema=FullCodeSolution,
+                        system_prompt=system_prompt,
+                    )
+                    _ast.parse(retry_solution.code)
+                    solution = retry_solution
+                    code_to_use = retry_solution.code
+                    logger.info("ast_parse_retry_succeeded")
+                except (SyntaxError, Exception) as retry_err:
+                    logger.error("ast_parse_retry_failed", error=str(retry_err))
+                    raise ValueError(
+                        f"Generated Python code has a syntax error that could not be fixed: {retry_err}"
+                    ) from retry_err
+
+        session.learning_response.full_code = code_to_use
+        # Req 4: set code_notice
+        session.learning_response.code_notice = "Generated code, not executed or tested."
         session.learning_response.code_gate_decision = gate_result.decision
 
         if session.learning_response.explanation:
@@ -478,7 +574,7 @@ async def handle_code_request(
             lines_text = "\n".join(f"- {line}" for line in solution.line_by_line_explanation)
             content = (
                 f"{solution.explanation}\n\n"
-                f"```python\n{solution.code}\n```\n\n"
+                f"```python\n{code_to_use}\n```\n\n"
                 f"### Line-by-Line Breakdown\n{lines_text}"
             )
             session.learning_response.explanation.sections.append(
@@ -498,7 +594,9 @@ async def handle_code_request(
     else:
         # Denied full code: return REQUIRE_CHECK or EXPLAIN with reasons and questions
         session.learning_response.full_code = None
+        session.learning_response.code_notice = None
         session.learning_response.code_gate_decision = gate_result.decision
 
     await store.save(session)
     return session.learning_response
+

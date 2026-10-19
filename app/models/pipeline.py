@@ -248,14 +248,27 @@ class AttemptReview(BaseModel):
 
 # ── Stage 7 – Understanding Check ─────────────────────────────────────────────
 
-class UnderstandingQuestion(BaseModel):
-    """Conceptual question, small exercise, or explain-back prompt."""
+class PublicUnderstandingQuestion(BaseModel):
+    """Public-facing question model: no expected_points exposed to clients."""
 
     question_id: str = Field(default_factory=_new_id)
     concept_id: str
     question_text: str
     question_type: QuestionType = QuestionType.CONCEPTUAL
+
+
+class UnderstandingQuestion(PublicUnderstandingQuestion):
+    """Internal question model: includes expected_points (answer key)."""
+
     expected_points: list[str] = Field(default_factory=list)
+
+    def to_public(self) -> PublicUnderstandingQuestion:
+        return PublicUnderstandingQuestion(
+            question_id=self.question_id,
+            concept_id=self.concept_id,
+            question_text=self.question_text,
+            question_type=self.question_type,
+        )
 
 
 class UnderstandingResult(BaseModel):
@@ -296,9 +309,10 @@ class LearningResponse(BaseModel):
     explanation: Explanation | None = None
     snippets: list[Snippet] = Field(default_factory=list)
     full_code: str | None = None
+    code_notice: str | None = None
     concept_nodes: list[ConceptNode] = Field(default_factory=list)
     concept_edges: list[ConceptEdge] = Field(default_factory=list)
-    questions: list[UnderstandingQuestion] = Field(default_factory=list)
+    questions: list[PublicUnderstandingQuestion] = Field(default_factory=list)
     understanding_result: UnderstandingResult | None = None
     code_gate_decision: CodeGateDecision
     progress: ProgressRecord | None = None
@@ -306,6 +320,52 @@ class LearningResponse(BaseModel):
     quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
     metrics: list[StageMetrics] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def _coerce_public_questions(cls, v: object) -> list[PublicUnderstandingQuestion]:
+        if not v or not isinstance(v, (list, tuple)):
+            return []
+        res: list[PublicUnderstandingQuestion] = []
+        for item in v:
+            if isinstance(item, PublicUnderstandingQuestion) and type(item) is PublicUnderstandingQuestion:
+                res.append(item)
+            elif hasattr(item, "question_id") and hasattr(item, "concept_id") and hasattr(item, "question_text"):
+                res.append(
+                    PublicUnderstandingQuestion(
+                        question_id=item.question_id,
+                        concept_id=item.concept_id,
+                        question_text=item.question_text,
+                        question_type=getattr(item, "question_type", QuestionType.CONCEPTUAL),
+                    )
+                )
+            elif isinstance(item, dict):
+                res.append(
+                    PublicUnderstandingQuestion(
+                        question_id=item.get("question_id") or _new_id(),
+                        concept_id=item.get("concept_id", ""),
+                        question_text=item.get("question_text", ""),
+                        question_type=item.get("question_type", QuestionType.CONCEPTUAL),
+                    )
+                )
+            else:
+                res.append(item)
+        return res
+
+    def to_public(self) -> "LearningResponse":
+        """Return a copy with expected_points stripped from questions."""
+        import copy
+        clone = copy.deepcopy(self)
+        clone.questions = [
+            PublicUnderstandingQuestion(
+                question_id=q.question_id,
+                concept_id=q.concept_id,
+                question_text=q.question_text,
+                question_type=q.question_type,
+            )
+            for q in clone.questions
+        ]
+        return clone
 
 
 class LearnRequest(BaseModel):

@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     max_evidence_retry_loops: int = Field(default=2, ge=1, le=5)
     confidence_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     answer_coverage_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    min_questions_answered: int = Field(default=2, ge=1)
 
     # ── Excerpts & Evidence Grounding ─────────────────────────────
     max_excerpt_chars: int = Field(default=4000, ge=100)
@@ -84,6 +85,7 @@ STAGE5_EXCERPT_BUDGET_CHARS: int = 12000
 STAGE5_TOP_N_RESOURCES: int = 3
 SUPPORT_TOKEN_OVERLAP_THRESHOLD: float = 0.15
 ANSWER_COVERAGE_THRESHOLD: float = 0.6
+MIN_QUESTIONS_ANSWERED: int = 2
 
 
 
