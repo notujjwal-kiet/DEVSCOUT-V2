@@ -36,9 +36,12 @@ class SessionData(BaseModel):
     response_id: str
     learning_response: LearningResponse
     snippet_hashes: list[str] = Field(default_factory=list)
+    snippets: list[str] = Field(default_factory=list)
     understanding_results: list[UnderstandingResult] = Field(default_factory=list)
     attempt_reviews: list[AttemptReview] = Field(default_factory=list)
     understanding_passed: bool = False
+    understanding_attempt_count: int = 0
+    last_understanding_attempt_at: datetime | None = None
     questions: list[UnderstandingQuestion] = Field(default_factory=list)
     goal_title: str = ""
     goal_description: str = ""
@@ -137,13 +140,17 @@ def create_session_from_response(
                     )
                 )
 
+    snippets: list[str] = [s.code for s in response.snippets]
     return SessionData(
         response_id=response.response_id,
         learning_response=response,
         snippet_hashes=snippet_hashes,
+        snippets=snippets,
         understanding_results=understanding_results,
         attempt_reviews=[],
         understanding_passed=False,
+        understanding_attempt_count=0,
+        last_understanding_attempt_at=None,
         questions=full_questions,
         goal_title=goal_title,
         goal_description=goal_description,

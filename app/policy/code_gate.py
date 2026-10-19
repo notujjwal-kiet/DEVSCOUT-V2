@@ -43,6 +43,7 @@ class LearnerReadiness(BaseModel):
     understanding_check_passed: bool = False
     attempt_review: AttemptReview | None = None
     final_build_submitted: bool = False
+    unlocked_by: str | None = None
 
 
 class ReadinessPolicyConfig(BaseModel):
@@ -70,6 +71,24 @@ class ReadinessPolicyConfig(BaseModel):
         if self.allow_final_build and readiness.final_build_submitted:
             return True
         return False
+
+    def get_unlock_path(self, readiness: LearnerReadiness | None) -> str | None:
+        """Determine which path unlocked readiness for FULL code."""
+        if readiness is None:
+            return None
+        if readiness.unlocked_by:
+            return readiness.unlocked_by
+        if self.allow_understanding_check and readiness.understanding_check_passed:
+            return "understanding"
+        if (
+            self.allow_learner_attempt
+            and readiness.attempt_review is not None
+            and readiness.attempt_review.status == AttemptStatus.ACCEPTABLE
+        ):
+            return "attempt"
+        if self.allow_final_build and readiness.final_build_submitted:
+            return "final_build"
+        return None
 
 
 # Singleton default readiness policy configuration
@@ -168,13 +187,16 @@ def evaluate_code_gate(
                 violations=violations,
             )
 
+        unlocked_by = policy_config.get_unlock_path(readiness)
         reasons.append(
-            "Explicit request received and learner readiness verified. Full implementation permitted."
+            f"Explicit request received and learner readiness verified via {unlocked_by or 'readiness criteria'}. "
+            "Full implementation permitted."
         )
         return CodeGateDecision(
             level=CodeGateLevel.FULL,
             reasons=reasons,
             violations=violations,
+            unlocked_by=unlocked_by,
         )
 
     # 3. Case: Snippet Requested / Permitted

@@ -105,6 +105,36 @@ def evaluate_answers(
     return results
 
 
+def check_understanding_completion(
+    answered_count: int,
+    total_questions: int,
+    min_questions_answered: int | None = None,
+    min_ratio: float = 0.60,
+) -> tuple[bool, str | None]:
+    """
+    Verify understanding coverage:
+    - Must answer at least min(total_questions, min_questions_answered)
+    - Must answer at least 60% of ALL questions in the check.
+    """
+    cfg = get_settings()
+    min_required = min_questions_answered if min_questions_answered is not None else cfg.min_questions_answered
+    required_count = min(total_questions, min_required)
+
+    if answered_count < required_count:
+        return False, f"Answered {answered_count} questions; minimum required is {required_count}."
+
+    if total_questions > 0:
+        ratio = answered_count / total_questions
+        if ratio < (min_ratio - 1e-9):
+            return (
+                False,
+                f"Answered {answered_count}/{total_questions} questions ({ratio:.0%}); "
+                f"at least {int(min_ratio * 100)}% of all questions must be answered.",
+            )
+
+    return True, None
+
+
 async def run(
     explanation_result: ExplanationResult,
     learner_response: str | None = None,

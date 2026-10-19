@@ -961,3 +961,201 @@ async def test_generic_500_message_on_internal_error(monkeypatch):
     assert data2["detail"] == "An internal error occurred. Please try again later."
     assert "internal_token" not in resp2.text
 
+
+# ── Test 15: Partial Answers Rejected (< 60% or < min required) ───────────────
+
+@pytest.mark.asyncio
+async def test_partial_answers_rejected_by_ratio():
+    """Answering less than 60% of all questions in check is rejected even if individual answers pass."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+    assert len(questions) >= 3
+
+    # Answer only 1 question (1/3 = 33.3% < 60%)
+    answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        }
+    ]
+
+    payload = {
+        "response_id": resp_id,
+        "wants_full_code": True,
+        "answers": answers,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/code-request", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert data["full_code"] is None
+    assert any("at least" in r.lower() or "minimum" in r.lower() for r in data["code_gate_decision"]["reasons"])
+
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert session.understanding_passed is False
+
+
+# ── Test 16: Understanding Attempt Counter & Cooldown ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_understanding_cooldown_and_max_attempts_cap():
+    """Understanding check enforces cooldown between attempts and caps total attempts per session."""
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id = initial_response.response_id
+    questions = initial_response.questions
+
+    answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": "Answer 1 covering type safety static checking schema validation.",
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": "Answer 2 covering active recall implementation attempt conceptual understanding.",
+        },
+    ]
+
+    # Attempt 1: Valid first attempt
+    payload = {"response_id": resp_id, "wants_full_code": False, "answers": answers}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp1 = await client.post("/api/code-request", json=payload)
+    assert resp1.status_code == 200
+
+    # Attempt 2: Immediately retrying should trigger cooldown
+    payload2 = {"response_id": resp_id, "wants_full_code": True, "answers": answers}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp2 = await client.post("/api/code-request", json=payload2)
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert any("cooldown" in r.lower() for r in data2["code_gate_decision"]["reasons"])
+
+    # Attempt Cap: Set session attempt count to max and clear cooldown timestamp
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    session.understanding_attempt_count = 5  # Max attempts reached
+    session.last_understanding_attempt_at = None  # Clear cooldown
+    session.understanding_passed = False
+    await store.save(session)
+
+    # Attempt 3: Cap exceeded
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp3 = await client.post("/api/code-request", json=payload2)
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    assert data3["code_gate_decision"]["level"] == "REQUIRE_CHECK"
+    assert any("maximum" in r.lower() and "exceeded" in r.lower() for r in data3["code_gate_decision"]["reasons"])
+
+
+# ── Test 17: Both Unlock Paths Expose unlocked_by in Response ──────────────────
+
+@pytest.mark.asyncio
+async def test_both_unlock_paths_expose_unlocked_by():
+    """Verify understanding check and code attempt unlock FULL code and expose unlocked_by."""
+    # ── Path A: Unlocked via Understanding Check ──
+    init_request = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response = await run_learning_pipeline(init_request)
+    resp_id_a = initial_response.response_id
+    questions = initial_response.questions
+
+    passing_answers = [
+        {
+            "question_id": questions[0].question_id,
+            "answer": (
+                "We use type safety and static checking to enforce schema validation "
+                "at architectural boundaries, creating self-documenting domain models."
+            ),
+        },
+        {
+            "question_id": questions[1].question_id,
+            "answer": (
+                "The readiness gate forces active recall and implementation attempts first, "
+                "which verifies conceptual understanding before code assistance."
+            ),
+        },
+    ]
+
+    payload_a = {
+        "response_id": resp_id_a,
+        "wants_full_code": True,
+        "answers": passing_answers,
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response_a = await client.post("/api/code-request", json=payload_a)
+
+    assert response_a.status_code == 200
+    data_a = response_a.json()
+    assert data_a["code_gate_decision"]["level"] == "FULL"
+    assert data_a["code_gate_decision"]["unlocked_by"] == "understanding"
+    assert data_a["unlocked_by"] == "understanding"
+
+    # ── Path B: Unlocked via Acceptable Code Attempt ──
+    init_request_b = LearnRequest(
+        goal="Rate Limiter Implementation",
+        experience_level=ExperienceLevel.INTERMEDIATE,
+        tech_stack=["Python"],
+    )
+    initial_response_b = await run_learning_pipeline(init_request_b)
+    resp_id_b = initial_response_b.response_id
+
+    # Populate milestone concepts on the session for relevance check
+    store = get_session_store()
+    session_b = await store.get(resp_id_b)
+    assert session_b is not None
+    if session_b.learning_response.learning_plan and session_b.learning_response.learning_plan.milestones:
+        session_b.learning_response.learning_plan.milestones[0].concepts = ["token_bucket", "refill_rate", "capacity"]
+        await store.save(session_b)
+
+    acceptable_attempt = """
+class TokenBucketLimiter:
+    def __init__(self, capacity: int, refill_rate: float):
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self.tokens = float(capacity)
+
+    def consume(self, count: int = 1) -> bool:
+        if self.tokens >= count:
+            self.tokens -= count
+            return True
+        return False
+"""
+    payload_b = {
+        "response_id": resp_id_b,
+        "wants_full_code": True,
+        "attempt_code": acceptable_attempt,
+        "attempt_language": "python",
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response_b = await client.post("/api/code-request", json=payload_b)
+
+    assert response_b.status_code == 200
+    data_b = response_b.json()
+    assert data_b["code_gate_decision"]["level"] == "FULL"
+    assert data_b["code_gate_decision"]["unlocked_by"] == "attempt"
+    assert data_b["unlocked_by"] == "attempt"
+
+

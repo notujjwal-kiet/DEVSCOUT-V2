@@ -59,6 +59,7 @@ class AttemptStatus(StrEnum):
     TRIVIAL = "TRIVIAL"
     COPIED_SNIPPET = "COPIED_SNIPPET"
     INVALID = "INVALID"
+    IRRELEVANT = "IRRELEVANT"
 
 
 class PipelineStatus(StrEnum):
@@ -118,6 +119,7 @@ class Milestone(BaseModel):
     title: str = Field(..., min_length=3, max_length=200)
     description: str = Field(..., min_length=5, max_length=1000)
     target_outcome: str = Field(..., min_length=3, max_length=1000)
+    concepts: list[str] = Field(default_factory=list)
     estimated_duration_minutes: int | None = Field(default=None, ge=1)
     is_completed: bool = False
 
@@ -238,6 +240,7 @@ class CodeGateDecision(BaseModel):
     level: CodeGateLevel
     reasons: list[str] = Field(default_factory=list)
     violations: list[str] = Field(default_factory=list)
+    unlocked_by: str | None = None
 
 
 class AttemptReview(BaseModel):
@@ -316,6 +319,7 @@ class LearningResponse(BaseModel):
     questions: list[PublicUnderstandingQuestion] = Field(default_factory=list)
     understanding_result: UnderstandingResult | None = None
     code_gate_decision: CodeGateDecision
+    unlocked_by: str | None = None
     progress: ProgressRecord | None = None
     confidence_score: float = Field(default=1.0, ge=0.0, le=1.0)
     quality_score: float = Field(default=1.0, ge=0.0, le=1.0)

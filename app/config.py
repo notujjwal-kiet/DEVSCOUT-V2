@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     stage5_top_n_resources: int = Field(default=3, ge=1)
     support_token_overlap_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
 
+    # ── Readiness & Attempt Review ─────────────────────────────────
+    snippet_copy_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    min_concept_references_for_relevance: int = Field(default=2, ge=0)
+    max_understanding_attempts: int = Field(default=5, ge=1)
+    attempt_cooldown_seconds: float = Field(default=30.0, ge=0.0)
+
     # ── CORS ──────────────────────────────────────────────────────
     cors_origins: list[str] = Field(
         default=["http://localhost:5173", "http://localhost:3000"]

@@ -17,6 +17,7 @@ Cross-cutting: Response Validator & Repair, graceful degradation for optional st
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 import httpx
 import structlog
 
@@ -72,7 +73,10 @@ from app.pipeline.session_store import (
     create_session_from_response,
     get_session_store,
 )
-from app.pipeline.stage7_output_validation import evaluate_answers
+from app.pipeline.stage7_output_validation import (
+    check_understanding_completion,
+    evaluate_answers,
+)
 from app.pipeline.structured_llm import generate_structured_with_retry
 from app.policy.attempt_review import review_attempt
 from app.policy.code_gate import LearnerReadiness
@@ -429,59 +433,115 @@ async def handle_code_request(
         raise SessionNotFoundError(request.response_id)
 
     cfg = get_settings()
+    understanding_reason: str | None = None
 
-    # ── Req 1 & 2: Deterministic Answer Evaluation ────────────────────────────
+    # ── Req 1 & 2: Deterministic Answer Evaluation & Attempt Tracking ─────────
     if request.answers:
-        questions_to_eval = session.questions if session.questions else session.learning_response.questions
-        eval_results = evaluate_answers(
-            answers=request.answers,
-            questions=questions_to_eval,
-            threshold=cfg.answer_coverage_threshold,
-        )
-        session.understanding_results.extend(eval_results)
-        if eval_results:
-            session.learning_response.understanding_result = eval_results[-1]
+        now = datetime.now(UTC)
 
-        # Map each answered question to its latest evaluation result in this session
-        latest_by_qid: dict[str, UnderstandingResult] = {}
-        for r in session.understanding_results:
-            latest_by_qid[r.question_id] = r
+        # Check attempt cooldown
+        if session.last_understanding_attempt_at is not None and cfg.attempt_cooldown_seconds > 0:
+            elapsed = (now - session.last_understanding_attempt_at).total_seconds()
+            if elapsed < cfg.attempt_cooldown_seconds:
+                remaining = int(cfg.attempt_cooldown_seconds - elapsed) + 1
+                understanding_reason = (
+                    f"Understanding check cooldown active. Please wait {remaining} seconds before retrying."
+                )
+                session.understanding_passed = False
+                logger.info("understanding_check_cooldown_active", remaining=remaining)
 
-        answered_count = len(latest_by_qid)
-        total_questions = len(questions_to_eval)
-        all_passed = (
-            len(latest_by_qid) > 0
-            and all(r.passed for r in latest_by_qid.values())
-        )
-        meets_minimum = (
-            (answered_count >= total_questions and total_questions > 0)
-            or answered_count >= cfg.min_questions_answered
-        )
-        if meets_minimum and all_passed:
-            session.understanding_passed = True
-            logger.info(
-                "understanding_check_passed",
-                answered=answered_count,
-                required=cfg.min_questions_answered,
-                total=total_questions,
+        # Check maximum attempts cap
+        if understanding_reason is None and session.understanding_attempt_count >= cfg.max_understanding_attempts:
+            understanding_reason = (
+                f"Maximum understanding check attempts ({cfg.max_understanding_attempts}) exceeded for this session."
             )
-        else:
             session.understanding_passed = False
-            logger.info(
-                "understanding_check_failed",
-                answered=answered_count,
-                required=cfg.min_questions_answered,
-                total=total_questions,
-                all_passed=all_passed,
+            logger.info("understanding_check_max_attempts_exceeded", count=session.understanding_attempt_count)
+
+        if understanding_reason is None:
+            session.understanding_attempt_count += 1
+            session.last_understanding_attempt_at = now
+
+            questions_to_eval = session.questions if session.questions else session.learning_response.questions
+            eval_results = evaluate_answers(
+                answers=request.answers,
+                questions=questions_to_eval,
+                threshold=cfg.answer_coverage_threshold,
+            )
+            session.understanding_results.extend(eval_results)
+            if eval_results:
+                session.learning_response.understanding_result = eval_results[-1]
+
+            # Map each answered question to its latest evaluation result in this session
+            latest_by_qid: dict[str, UnderstandingResult] = {}
+            for r in session.understanding_results:
+                latest_by_qid[r.question_id] = r
+
+            answered_count = len(latest_by_qid)
+            total_questions = len(questions_to_eval)
+            all_passed = (
+                len(latest_by_qid) > 0
+                and all(r.passed for r in latest_by_qid.values())
+            )
+            completion_ok, completion_err = check_understanding_completion(
+                answered_count=answered_count,
+                total_questions=total_questions,
+                min_questions_answered=cfg.min_questions_answered,
+                min_ratio=0.60,
+            )
+            if completion_ok and all_passed:
+                session.understanding_passed = True
+                logger.info(
+                    "understanding_check_passed",
+                    answered=answered_count,
+                    required=cfg.min_questions_answered,
+                    total=total_questions,
+                )
+            else:
+                session.understanding_passed = False
+                understanding_reason = completion_err or "One or more answers did not meet the coverage threshold."
+                logger.info(
+                    "understanding_check_failed",
+                    answered=answered_count,
+                    required=cfg.min_questions_answered,
+                    total=total_questions,
+                    all_passed=all_passed,
+                    reason=understanding_reason,
+                )
+        else:
+            session.learning_response.understanding_result = UnderstandingResult(
+                question_id=request.answers[0].question_id if request.answers else "general",
+                passed=False,
+                learner_response=request.answers[0].answer if request.answers else "",
+                feedback=understanding_reason,
+                detected_misconceptions=[understanding_reason],
+                score=0.0,
             )
 
-    # ── Req 2: Attempt Code Review ────────────────────────────────────────────
+    # ── Req 2: Attempt Code Review with Relevance & Snippet Similarity ─────────
     attempt_review_res = None
     if request.attempt_code:
+        milestone_concepts: list[str] = []
+        lr = session.learning_response
+        if lr.learning_plan and lr.learning_plan.milestones:
+            current_milestone = next(
+                (m for m in lr.learning_plan.milestones if not m.is_completed),
+                lr.learning_plan.milestones[0],
+            )
+            if current_milestone.concepts:
+                milestone_concepts.extend(current_milestone.concepts)
+            elif lr.concept_nodes:
+                milestone_concepts.extend(node.label for node in lr.concept_nodes)
+            else:
+                words = [w for w in re.findall(r"\w+", current_milestone.title.lower()) if len(w) >= 3]
+                milestone_concepts.extend(words)
+
         attempt_review_res = review_attempt(
             code=request.attempt_code,
             language=request.attempt_language or "python",
             previous_snippet_hashes=session.snippet_hashes,
+            previous_snippets=session.snippets,
+            milestone_concepts=milestone_concepts if milestone_concepts else None,
         )
         session.attempt_reviews.append(attempt_review_res)
 
@@ -493,9 +553,21 @@ async def handle_code_request(
         (r for r in session.attempt_reviews if r.status == AttemptStatus.ACCEPTABLE),
         None,
     )
+
+    active_unlocked_by: str | None = None
+    if request.attempt_code and attempt_review_res and attempt_review_res.status == AttemptStatus.ACCEPTABLE:
+        active_unlocked_by = "attempt"
+    elif request.answers and session_understanding_passed:
+        active_unlocked_by = "understanding"
+    elif session_understanding_passed:
+        active_unlocked_by = "understanding"
+    elif session_acceptable_attempt:
+        active_unlocked_by = "attempt"
+
     readiness = LearnerReadiness(
         understanding_check_passed=session_understanding_passed,
         attempt_review=session_acceptable_attempt or attempt_review_res,
+        unlocked_by=active_unlocked_by,
     )
 
     # ── Stage 8 Code Gate ─────────────────────────────────────────────────────
@@ -505,6 +577,9 @@ async def handle_code_request(
         readiness=readiness,
         has_explanation=True,
     )
+
+    if understanding_reason and gate_result.decision.level != CodeGateLevel.FULL:
+        gate_result.decision.reasons.insert(0, understanding_reason)
 
     # ── Req 4: Full Code Generation ────────────────────────────────────────────
     if gate_result.decision.level == CodeGateLevel.FULL:
@@ -591,6 +666,7 @@ async def handle_code_request(
         # Req 4: set code_notice
         session.learning_response.code_notice = "Generated code, not executed or tested."
         session.learning_response.code_gate_decision = gate_result.decision
+        session.learning_response.unlocked_by = gate_result.decision.unlocked_by
 
         if session.learning_response.explanation:
             first_res_id = (
@@ -624,6 +700,7 @@ async def handle_code_request(
         session.learning_response.full_code = None
         session.learning_response.code_notice = None
         session.learning_response.code_gate_decision = gate_result.decision
+        session.learning_response.unlocked_by = None
 
     await store.save(session)
     return session.learning_response

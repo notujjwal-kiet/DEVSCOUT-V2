@@ -345,3 +345,74 @@ def process_scores(scores: list[int]) -> dict[str, int]:
     review = review_attempt(code, min_real_lines=10)
     assert review.status == AttemptStatus.ACCEPTABLE
 
+
+def test_renamed_variable_copy_detected():
+    """Copy detection catches renamed-variable AST clones above threshold."""
+    snippet = """
+def add_item_to_cart(cart, item, quantity):
+    if item not in cart:
+        cart[item] = quantity
+    else:
+        cart[item] += quantity
+    return cart
+"""
+    renamed_attempt = """
+def store_element_in_basket(basket, element, amount):
+    if element not in basket:
+        basket[element] = amount
+    else:
+        basket[element] += amount
+    return basket
+"""
+    review = review_attempt(renamed_attempt, previous_snippets=[snippet])
+    assert review.status == AttemptStatus.COPIED_SNIPPET
+    assert any("too similar" in r.lower() or "snippet" in r.lower() for r in review.reasons)
+
+
+def test_junk_code_rejected_as_irrelevant():
+    """Syntactically valid structural code that lacks required milestone concepts is rejected as IRRELEVANT."""
+    fibonacci_code = """
+def calculate_fibonacci(count: int) -> list[int]:
+    sequence = [0, 1]
+    total_iterations = 0
+    for idx in range(2, count):
+        next_val = sequence[idx - 1] + sequence[idx - 2]
+        if next_val > 1000:
+            sequence.append(1000)
+        else:
+            sequence.append(next_val)
+        total_iterations += 1
+    return sequence
+"""
+    # Requires concepts related to caching, but code is fibonacci
+    review = review_attempt(
+        fibonacci_code,
+        milestone_concepts=["token_bucket", "refill_rate", "capacity"],
+        min_concept_references=2,
+    )
+    assert review.status == AttemptStatus.IRRELEVANT
+    assert any("relevance" in r.lower() for r in review.reasons)
+
+
+def test_relevant_code_accepted_with_milestone_concepts():
+    """Attempt that references at least K milestone concepts is marked ACCEPTABLE."""
+    relevant_code = """
+class TokenBucketLimiter:
+    def __init__(self, capacity: int, refill_rate: float):
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self.tokens = capacity
+
+    def consume(self, count: int = 1) -> bool:
+        if self.tokens >= count:
+            self.tokens -= count
+            return True
+        return False
+"""
+    review = review_attempt(
+        relevant_code,
+        milestone_concepts=["token_bucket", "refill_rate", "capacity"],
+        min_concept_references=2,
+    )
+    assert review.status == AttemptStatus.ACCEPTABLE
+
