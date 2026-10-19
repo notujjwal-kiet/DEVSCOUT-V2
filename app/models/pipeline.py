@@ -10,7 +10,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.config import MAX_EXCERPT_CHARS
 
 
 # ── Identifiers & Timestamps ──────────────────────────────────────────────────
@@ -137,6 +139,8 @@ class LearningPlan(BaseModel):
 class Resource(BaseModel):
     """Discovered real source with provenance, freshness, and fitness."""
 
+    model_config = ConfigDict(validate_assignment=True)
+
     resource_id: str = Field(default_factory=_new_id)
     url: str
     type: ResourceType
@@ -148,9 +152,21 @@ class Resource(BaseModel):
     level_fit: ExperienceLevel = ExperienceLevel.BEGINNER
     uncertainty_flag: bool = False
     summary: str = ""
+    excerpt: str = Field(default="", exclude=True)
     last_updated: datetime | None = None
     popularity: int | None = None
     topic: str | None = None
+
+    @field_validator("excerpt")
+    @classmethod
+    def _bound_excerpt(cls, v: str) -> str:
+        if v and len(v) > MAX_EXCERPT_CHARS:
+            return v[:MAX_EXCERPT_CHARS]
+        return v
+
+    @property
+    def evidence_score(self) -> float:
+        return self.reliability * self.freshness_score
 
 
 # ── Stage 5 – Explanation & Concept Mapping ───────────────────────────────────
@@ -161,6 +177,7 @@ class ExplanationSection(BaseModel):
     title: str
     content: str
     citation_resource_ids: list[str] = Field(default_factory=list)
+    weakly_supported: bool = False
 
 
 class Explanation(BaseModel):

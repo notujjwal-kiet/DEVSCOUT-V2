@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import re
 from typing import Sequence
+
 
 import httpx
 import structlog
 
+from app.config import MAX_EXCERPT_CHARS
 from app.models.pipeline import (
     IntentPlanResult,
     Resource,
@@ -38,6 +41,41 @@ DEFAULT_STAGE3_CONCURRENCY = 4
 DOCS_QUERY_TEMPLATE = "{topic} official documentation guide"
 GITHUB_QUERY_TEMPLATE = "{topic} github repository example code"
 COMMUNITY_QUERY_TEMPLATE = "{topic} community discussion best practices gotchas"
+
+
+BOILERPLATE_PATTERNS = [
+    re.compile(r"^skip to\b", re.I),
+    re.compile(r"^home\s*>", re.I),
+    re.compile(r"cookie policy|privacy policy", re.I),
+    re.compile(r"copyright\s+(\d{4})?", re.I),
+    re.compile(r"all rights reserved", re.I),
+]
+
+
+def extract_clean_excerpt(text: str, max_chars: int = MAX_EXCERPT_CHARS) -> str:
+    """
+    Extract a cleaned excerpt of the first relevant content chunk:
+    - Drops raw navigation and boilerplate lines (e.g. skip links, breadcrumbs, copyright).
+    - Normalizes extra whitespace and captures substantive content up to max_chars characters.
+    """
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    cleaned_chunks: list[str] = []
+
+    for line in lines:
+        if any(pattern.search(line) for pattern in BOILERPLATE_PATTERNS):
+            continue
+        cleaned_chunks.append(line)
+
+    combined = " ".join(" ".join(cleaned_chunks).split()).strip()
+    if not combined:
+        combined = " ".join(text.split()).strip()
+
+    return combined[:max_chars].strip()
+
+
 
 
 @dataclass
@@ -206,6 +244,7 @@ async def run(
                         client=active_client,
                     )
                     res = doc.resource
+                    res.excerpt = extract_clean_excerpt(doc.text, max_chars=MAX_EXCERPT_CHARS)
                     res.content_hash = hash_content(doc.text)
                     res.last_updated = doc.last_updated
                     res.popularity = doc.popularity

@@ -155,3 +155,27 @@ def test_repair_hook_fixes_unauthorized_code_and_citations():
     assert final_report.citations_valid is True
     assert "fake-id" not in repaired_resp.explanation.sections[0].citation_resource_ids
     assert "```python" not in repaired_resp.explanation.sections[0].content
+
+
+def test_validate_response_weakly_supported_flag():
+    """validate_response checks token overlap against resource excerpts and flags weak sections."""
+    from app.pipeline.response_validator import compute_token_overlap
+
+    # Direct unit test on compute_token_overlap
+    assert compute_token_overlap("redis cluster hash slot sharding", ["redis cluster hash slots"]) > 0.5
+    assert compute_token_overlap("quantum mechanics wave function", ["redis cluster hash slots"]) == 0.0
+
+    response = _make_valid_response()
+    response.resources[0].excerpt = "Redis cluster hash slot allocation mechanism."
+    response.explanation.sections[0].content = (
+        "Completely different ungrounded claim regarding botanical photosynthesis."
+    )
+
+    report = validate_response(response)
+    # Valid citations exist, gate respected -> is_valid remains True
+    assert report.is_valid is True
+    # But section is marked weakly supported
+    assert response.explanation.sections[0].weakly_supported is True
+    assert report.weakly_supported_sections == ["Foundations"]
+    assert any("[Note: weak signal, not verification]" in issue for issue in report.issues)
+

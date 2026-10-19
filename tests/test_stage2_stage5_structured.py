@@ -415,3 +415,276 @@ async def test_stage5_raises_structured_output_error_after_retry_failure():
 
     assert "ExplanationResult" in str(exc_info.value)
     assert mock_provider.generate_structured.await_count == 2
+
+
+# ── Grounding, Excerpt, Budget, & Support Validation Tests ───────────────────
+
+def test_grounded_section_passes_support_check():
+    """Grounded section with high token overlap passes and is not marked weakly_supported."""
+    resource = Resource(
+        resource_id="res-redis-cluster",
+        url="https://redis.io/topics/cluster-spec",
+        type=ResourceType.DOCS,
+        title="Redis Cluster Specification",
+        content_hash="h123",
+        reliability=1.0,
+        freshness_score=0.9,
+        excerpt=(
+            "Redis Cluster provides a way to run a Redis installation where data is "
+            "automatically sharded across multiple Redis nodes. Every cluster node has "
+            "a unique identifier or node ID. Redis Cluster does not support multiple databases."
+        ),
+    )
+    explanation = Explanation(
+        topic="Redis Cluster",
+        summary="Cluster summary",
+        sections=[
+            ExplanationSection(
+                title="Cluster Architecture",
+                content=(
+                    "Redis Cluster allows running installations where data is automatically "
+                    "sharded across multiple nodes using unique cluster node identifiers."
+                ),
+                citation_resource_ids=["res-redis-cluster"],
+            )
+        ],
+        confidence_score=0.95,
+    )
+
+    report = validate_explanation(explanation, [resource])
+    assert report.is_valid is True
+    assert report.citations_valid is True
+    assert explanation.sections[0].weakly_supported is False
+    assert len(report.weakly_supported_sections) == 0
+
+
+def test_cited_but_unrelated_content_flagged_weakly_supported():
+    """Section citing a resource but containing unrelated content is flagged weakly_supported."""
+    resource = Resource(
+        resource_id="res-redis-cluster",
+        url="https://redis.io/topics/cluster-spec",
+        type=ResourceType.DOCS,
+        title="Redis Cluster Specification",
+        content_hash="h123",
+        reliability=1.0,
+        freshness_score=0.9,
+        excerpt="Redis cluster hash slots and sharding across masters and replicas.",
+    )
+    explanation = Explanation(
+        topic="Redis Cluster",
+        summary="Cluster summary",
+        sections=[
+            ExplanationSection(
+                title="Unrelated Topic",
+                content=(
+                    "Photosynthesis in green plants converts solar energy into chemical sugars "
+                    "releasing oxygen as a byproduct."
+                ),
+                citation_resource_ids=["res-redis-cluster"],
+            )
+        ],
+        confidence_score=0.9,
+    )
+
+    report = validate_explanation(explanation, [resource])
+    # The citation is valid (the resource exists), so citations_valid is True
+    assert report.citations_valid is True
+    # But content has minimal/zero token overlap with excerpt -> flagged weakly_supported
+    assert explanation.sections[0].weakly_supported is True
+    assert report.weakly_supported_sections == ["Unrelated Topic"]
+    # Marked clearly as a weak signal, not verification failure
+    assert any("[Note: weak signal, not verification]" in issue for issue in report.issues)
+    assert report.is_valid is True
+
+
+def test_resource_excerpt_truncation_and_serialization_exclusion():
+    """Resource excerpt is truncated to MAX_EXCERPT_CHARS and excluded from model_dump()."""
+    from app.config import MAX_EXCERPT_CHARS
+
+    long_excerpt = "a" * (MAX_EXCERPT_CHARS + 1500)
+    res = Resource(
+        resource_id="res-long",
+        url="https://example.com/long",
+        type=ResourceType.DOCS,
+        title="Long Excerpt Doc",
+        content_hash="h999",
+        reliability=1.0,
+        freshness_score=0.9,
+        excerpt=long_excerpt,
+    )
+
+    # Truncated in model
+    assert len(res.excerpt) == MAX_EXCERPT_CHARS
+
+    # Excluded when serialized to dict / JSON
+    dumped = res.model_dump()
+    assert "excerpt" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_stage5_prompt_respects_excerpt_budget():
+    """Stage 5 respects excerpt character budget across multiple resources."""
+    r1 = Resource(
+        resource_id="res-1",
+        url="https://example.com/1",
+        type=ResourceType.DOCS,
+        title="Doc 1",
+        content_hash="h1",
+        reliability=1.0,
+        freshness_score=1.0,
+        excerpt="1234567890" * 50,  # 500 chars
+    )
+    r2 = Resource(
+        resource_id="res-2",
+        url="https://example.com/2",
+        type=ResourceType.DOCS,
+        title="Doc 2",
+        content_hash="h2",
+        reliability=0.9,
+        freshness_score=0.9,
+        excerpt="ABCDEFGHIJ" * 50,  # 500 chars
+    )
+
+    evidence = EvidenceReviewResult(
+        goal_id="g1",
+        is_sufficient=True,
+        is_fresh=True,
+        reviewed_resources=[r1, r2],
+    )
+    plan = LearningPlan(
+        goal_id="g1",
+        knowledge_gaps=[],
+        learning_outcomes=[],
+        depth_level="intermediate",
+        milestones=[
+            Milestone(
+                title="Topic 1",
+                description="Desc 1",
+                target_outcome="Outcome 1",
+            )
+        ],
+    )
+    plan_result = IntentPlanResult(plan=plan)
+
+    mock_provider = AsyncMock()
+    mock_provider.generate_structured.return_value = ExplanationResult(
+        explanation=Explanation(
+            topic="Topic 1",
+            summary="Summary",
+            sections=[
+                ExplanationSection(
+                    title="Section 1",
+                    content="Doc 1 content 1234567890",
+                    citation_resource_ids=["res-1"],
+                )
+            ],
+            confidence_score=0.95,
+        ),
+        concept_nodes=[],
+        concept_edges=[],
+    )
+
+    # Budget of 300 chars: should not include full 1000 chars of excerpts
+    await stage5_ai_analysis.run(
+        evidence_review=evidence,
+        plan_result=plan_result,
+        provider=mock_provider,
+        excerpt_budget=300,
+        top_n_resources=2,
+    )
+
+    prompt = mock_provider.generate_structured.call_args.kwargs["prompt"]
+    # Check that prompt contains excerpt instructions
+    assert "Paraphrase concepts in your own words; DO NOT copy text verbatim" in prompt
+    assert "[Not backed by sources]" in prompt
+
+    # Extract all excerpts included in the prompt
+    assert "1234567890" in prompt
+    # Since total budget is 300, r1 takes ~300 chars, so r2 cannot have its full 500 chars
+    assert prompt.count("ABCDEFGHIJ") < 50
+
+
+@pytest.mark.asyncio
+async def test_stage5_iterates_over_multiple_topics_from_milestones():
+    """Stage 5 iterates over milestones/topics and includes top resources for each."""
+    r_redis = Resource(
+        resource_id="res-redis",
+        url="https://redis.io/doc",
+        type=ResourceType.DOCS,
+        title="Redis Architecture",
+        content_hash="h1",
+        reliability=1.0,
+        freshness_score=0.9,
+        excerpt="Redis cluster hash slot allocation mechanism.",
+    )
+    r_fastapi = Resource(
+        resource_id="res-fastapi",
+        url="https://fastapi.tiangolo.com/doc",
+        type=ResourceType.DOCS,
+        title="FastAPI Integration",
+        content_hash="h2",
+        reliability=1.0,
+        freshness_score=0.9,
+        excerpt="FastAPI dependency injection and routing.",
+    )
+
+    evidence = EvidenceReviewResult(
+        goal_id="g1",
+        is_sufficient=True,
+        is_fresh=True,
+        reviewed_resources=[r_redis, r_fastapi],
+    )
+    plan = LearningPlan(
+        goal_id="g1",
+        knowledge_gaps=[],
+        learning_outcomes=[],
+        depth_level="intermediate",
+        milestones=[
+            Milestone(
+                title="Redis Sharding",
+                description="Cluster nodes",
+                target_outcome="Sharded cluster",
+            ),
+            Milestone(
+                title="FastAPI API Layer",
+                description="Web service endpoints",
+                target_outcome="Working API",
+            ),
+        ],
+    )
+    plan_result = IntentPlanResult(plan=plan)
+
+    mock_provider = AsyncMock()
+    mock_provider.generate_structured.return_value = ExplanationResult(
+        explanation=Explanation(
+            topic="Multiple Topics",
+            summary="Summary",
+            sections=[
+                ExplanationSection(
+                    title="Redis Sharding",
+                    content="Redis cluster hash slot allocation.",
+                    citation_resource_ids=["res-redis"],
+                ),
+                ExplanationSection(
+                    title="FastAPI API Layer",
+                    content="FastAPI dependency injection and routing.",
+                    citation_resource_ids=["res-fastapi"],
+                ),
+            ],
+            confidence_score=0.95,
+        ),
+        concept_nodes=[],
+        concept_edges=[],
+    )
+
+    await stage5_ai_analysis.run(
+        evidence_review=evidence,
+        plan_result=plan_result,
+        provider=mock_provider,
+    )
+
+    prompt = mock_provider.generate_structured.call_args.kwargs["prompt"]
+    # Check that both topics appear in the prompt
+    assert "Topic: Redis Sharding" in prompt
+    assert "Topic: FastAPI API Layer" in prompt
+

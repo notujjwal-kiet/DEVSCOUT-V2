@@ -390,3 +390,71 @@ async def test_stage3_unscored_contract(monkeypatch):
     assert res.freshness_score == 0.0
     assert res.uncertainty_flag is False
     assert res.content_hash == hash_content("Unscored text")
+
+
+@pytest.mark.asyncio
+async def test_stage3_stores_cleaned_excerpt_and_preserves_hash(monkeypatch):
+    """Stage 3 stores a cleaned excerpt of doc.text and preserves content_hash."""
+    from app.pipeline.stage3_research import extract_clean_excerpt
+
+    # Test extract_clean_excerpt helper directly
+    raw_nav_text = """
+    Home > Docs > Caching
+    Skip to main content
+    
+    Distributed caching allows systems to store frequently accessed data in high-speed storage.
+    By distributing data across multiple cache nodes, applications can achieve horizontal scalability.
+    
+    Copyright 2026 Example Corp. All rights reserved.
+    """
+    cleaned = extract_clean_excerpt(raw_nav_text, max_chars=100)
+    assert not cleaned.startswith("Home")
+    assert not cleaned.startswith("Skip to main content")
+    assert "Distributed caching" in cleaned
+    assert len(cleaned) <= 100
+
+    # Test in Stage 3 run()
+    full_body = (
+        "Distributed caching fundamentals: memory caches like Redis store key-value pairs "
+        "in RAM for sub-millisecond retrieval. Consistent hashing distributes keys evenly."
+    )
+
+    async def mock_discover_sources(query, max_results=5, provider=None, http_client=None):
+        return [
+            DiscoveredSource(
+                url="https://example.com/caching-guide",
+                title="Caching Guide",
+                domain="example.com",
+                source_type_hint=ResourceType.DOCS,
+            )
+        ]
+
+    async def mock_search_repos(self, query, limit=3):
+        return []
+
+    async def mock_fetch_page(url, resource_type, client=None):
+        return ResearchDocument(
+            resource=Resource(
+                url=url,
+                type=resource_type,
+                title="Caching Guide",
+                content_hash="raw_hash",
+            ),
+            text=full_body,
+        )
+
+    monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_sources)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repos)
+    monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", mock_fetch_page)
+
+    plan_result = _make_plan_result(["Caching"])
+    result = await stage3_research.run(plan_result)
+
+    assert len(result.resources) == 1
+    resource = result.resources[0]
+    # content_hash is intact and matches full text hash
+    assert resource.content_hash == hash_content(full_body)
+    # excerpt is populated with cleaned text
+    assert "Distributed caching fundamentals" in resource.excerpt
+    assert resource.excerpt != ""
+

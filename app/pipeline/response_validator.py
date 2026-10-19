@@ -15,6 +15,7 @@ import re
 from typing import Sequence
 from pydantic import BaseModel, Field
 
+from app.config import SUPPORT_TOKEN_OVERLAP_THRESHOLD
 from app.models.pipeline import (
     CodeGateLevel,
     Explanation,
@@ -27,6 +28,46 @@ from app.research.discovery import normalize_url
 FENCED_CODE_PATTERN = re.compile(r"```(?:\w+)?\s*\n?(.*?)```", re.DOTALL)
 NOT_BACKED_BY_SOURCES_MARKER = "[Not backed by sources]"
 
+# Substantive token extraction for deterministic support checks
+DEFAULT_STOP_WORDS: set[str] = {
+    "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with",
+    "by", "from", "up", "about", "into", "over", "after", "is", "are", "was",
+    "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
+    "but", "if", "then", "else", "when", "where", "why", "how", "all", "any",
+    "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very", "can", "will",
+    "just", "should", "now", "it", "its", "this", "that", "these", "those",
+    "you", "your", "we", "our", "he", "she", "they", "them", "which", "what",
+}
+
+TOKEN_PATTERN = re.compile(r"\b[a-zA-Z0-9_-]{3,}\b")
+
+
+def tokenize_text(text: str) -> set[str]:
+    """Extract lowercase substantive tokens of length >= 3, excluding common stop words."""
+    if not text:
+        return set()
+    words = TOKEN_PATTERN.findall(text.lower())
+    return {w for w in words if w not in DEFAULT_STOP_WORDS}
+
+
+def compute_token_overlap(content: str, excerpts: Sequence[str]) -> float:
+    """
+    Compute token overlap between section content and cited resource excerpts.
+    Returns the fraction of substantive content tokens found in the combined excerpts.
+    """
+    content_tokens = tokenize_text(content)
+    if not content_tokens:
+        return 0.0
+
+    combined_excerpts = " ".join(excerpts)
+    excerpt_tokens = tokenize_text(combined_excerpts)
+    if not excerpt_tokens:
+        return 0.0
+
+    overlap = content_tokens & excerpt_tokens
+    return len(overlap) / len(content_tokens)
+
 
 class ValidationReport(BaseModel):
     """Validation report summarizing verification results and detected issues."""
@@ -38,6 +79,7 @@ class ValidationReport(BaseModel):
     quality_metrics_present: bool = True
     issues: list[str] = Field(default_factory=list)
     repaired: bool = False
+    weakly_supported_sections: list[str] = Field(default_factory=list)
 
 
 def extract_fenced_code_blocks(text: str) -> list[str]:
@@ -49,10 +91,11 @@ def extract_fenced_code_blocks(text: str) -> list[str]:
 
 def _build_resource_lookup(
     resources: Sequence[Resource],
-) -> tuple[set[str], dict[str, str]]:
-    """Build fast lookup structures for verified resource IDs and URLs."""
+) -> tuple[set[str], dict[str, str], dict[str, Resource]]:
+    """Build fast lookup structures for verified resource IDs, URLs, and objects."""
     known_ids = {r.resource_id for r in resources}
     url_to_id: dict[str, str] = {}
+    id_to_resource: dict[str, Resource] = {r.resource_id: r for r in resources}
     for r in resources:
         if r.url:
             clean_url = r.url.strip()
@@ -64,12 +107,13 @@ def _build_resource_lookup(
                     url_to_id[norm] = r.resource_id
             except Exception:
                 pass
-    return known_ids, url_to_id
+    return known_ids, url_to_id, id_to_resource
 
 
 def validate_explanation(
     explanation: Explanation,
     resources: Sequence[Resource],
+    support_threshold: float = SUPPORT_TOKEN_OVERLAP_THRESHOLD,
 ) -> ValidationReport:
     """
     Validate an Explanation against verified Resources.
@@ -77,9 +121,13 @@ def validate_explanation(
     - Every claim/section must cite at least one verified Resource id or URL,
       OR must be explicitly marked with '[Not backed by sources]'.
     - Phantom citations (IDs or URLs not present in verified resources) are flagged.
+    - Deterministic support check: computes token overlap between section content
+      and cited resources' excerpts. If below support_threshold, marks section
+      'weakly_supported' (labeled as a weak signal, not verification).
     - Confidence score must be in [0.0, 1.0].
     """
     issues: list[str] = []
+    weakly_supported_sections: list[str] = []
     citations_valid = True
     quality_metrics_present = True
 
@@ -89,7 +137,7 @@ def validate_explanation(
             "Explanation has no sections. Claims must be organized in sections with citations."
         )
 
-    known_ids, url_to_id = _build_resource_lookup(resources)
+    known_ids, url_to_id, id_to_resource = _build_resource_lookup(resources)
 
     for idx, section in enumerate(explanation.sections):
         valid_cites: list[str] = []
@@ -133,6 +181,24 @@ def validate_explanation(
                 f"Section '{section.title}' (index {idx}) has no citations and is not marked 'not backed by sources'."
             )
 
+        # Deterministic support check: token overlap with cited resources' excerpts
+        cited_resources = [id_to_resource[cid] for cid in valid_cites if cid in id_to_resource]
+        cited_excerpts = [r.excerpt for r in cited_resources if r.excerpt and r.excerpt.strip()]
+
+        if cited_excerpts:
+            overlap = compute_token_overlap(section.content, cited_excerpts)
+            if overlap < support_threshold:
+                section.weakly_supported = True
+                weakly_supported_sections.append(section.title)
+                issues.append(
+                    f"Section '{section.title}' (index {idx}) is weakly supported by cited excerpts "
+                    f"(token overlap {overlap:.2f} < {support_threshold:.2f}). [Note: weak signal, not verification]"
+                )
+            else:
+                section.weakly_supported = False
+        else:
+            section.weakly_supported = False
+
     if not (0.0 <= explanation.confidence_score <= 1.0):
         quality_metrics_present = False
         issues.append(
@@ -148,7 +214,9 @@ def validate_explanation(
         code_gate_respected=True,
         quality_metrics_present=quality_metrics_present,
         issues=issues,
+        weakly_supported_sections=weakly_supported_sections,
     )
+
 
 
 def repair_explanation(
@@ -163,7 +231,7 @@ def repair_explanation(
     - If a section has no valid citations, marks its content with '[Not backed by sources]'.
     - Clamps confidence_score to [0.0, 1.0].
     """
-    known_ids, url_to_id = _build_resource_lookup(resources)
+    known_ids, url_to_id, _ = _build_resource_lookup(resources)
 
     has_url_citations = False
     for sec in explanation.sections:
@@ -250,14 +318,18 @@ def validate_response(response: LearningResponse) -> ValidationReport:
             issues=issues,
         )
 
+    weakly_supported_sections: list[str] = []
+
     # 2. Citations check: every explanation claim must cite an existing Resource id/url or be marked not backed by sources
     if response.explanation:
         exp_report = validate_explanation(response.explanation, response.resources)
         if not exp_report.citations_valid:
             citations_valid = False
-            issues.extend(exp_report.issues)
+        issues.extend(exp_report.issues)
+        weakly_supported_sections.extend(exp_report.weakly_supported_sections)
 
     # 3. Code gate decision respected
+
     gate_level = response.code_gate_decision.level
 
     # Collect all fenced code blocks in text fields
@@ -323,7 +395,9 @@ def validate_response(response: LearningResponse) -> ValidationReport:
         code_gate_respected=code_gate_respected,
         quality_metrics_present=quality_metrics_present,
         issues=issues,
+        weakly_supported_sections=weakly_supported_sections,
     )
+
 
 
 def repair_response(response: LearningResponse, report: ValidationReport) -> tuple[LearningResponse, ValidationReport]:
@@ -338,6 +412,7 @@ def repair_response(response: LearningResponse, report: ValidationReport) -> tup
 
     # Copy / clone response for repair
     repaired_data = response.model_dump()
+    repaired_data["resources"] = [r.model_copy() for r in response.resources]
     gate_level = response.code_gate_decision.level
 
     # 1. Repair code gate violations
