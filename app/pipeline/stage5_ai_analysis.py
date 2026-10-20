@@ -93,10 +93,13 @@ async def run(
 
     topics = extract_plan_topics(plan_result)
 
-    # Format available resources with excerpts per topic within excerpt_budget
+    # Cap prompt size: send at most 6 sources total, and limit excerpt chars per source
+    MAX_STAGE5_SOURCES = 6
+    max_excerpt_per_source = cfg.max_excerpt_chars
     remaining_budget = excerpt_budget
-    topic_blocks: list[str] = []
 
+    candidate_resources: list[Resource] = []
+    seen_ids: set[str] = set()
     for topic in topics:
         topic_lower = topic.lower()
         matching = [
@@ -105,18 +108,44 @@ async def run(
             if r.topic and (r.topic.lower() in topic_lower or topic_lower in r.topic.lower())
         ]
         other = [r for r in evidence_review.reviewed_resources if r not in matching]
-
-        # Rank resources by evidence_score descending
         matching.sort(key=lambda r: r.evidence_score, reverse=True)
         other.sort(key=lambda r: r.evidence_score, reverse=True)
+        for r in (matching + other):
+            if r.resource_id not in seen_ids:
+                seen_ids.add(r.resource_id)
+                candidate_resources.append(r)
+                if len(candidate_resources) >= MAX_STAGE5_SOURCES:
+                    break
+        if len(candidate_resources) >= MAX_STAGE5_SOURCES:
+            break
 
+    if len(candidate_resources) < MAX_STAGE5_SOURCES:
+        remaining_pool = [r for r in evidence_review.reviewed_resources if r.resource_id not in seen_ids]
+        remaining_pool.sort(key=lambda r: r.evidence_score, reverse=True)
+        for r in remaining_pool[: MAX_STAGE5_SOURCES - len(candidate_resources)]:
+            candidate_resources.append(r)
+            seen_ids.add(r.resource_id)
+
+    topic_blocks: list[str] = []
+    included_resource_ids: set[str] = set()
+
+    for topic in topics:
+        topic_lower = topic.lower()
+        matching = [
+            r
+            for r in candidate_resources
+            if r.topic and (r.topic.lower() in topic_lower or topic_lower in r.topic.lower())
+        ]
+        other = [r for r in candidate_resources if r not in matching]
         selected_resources = (matching + other)[:top_n]
 
         res_lines: list[str] = []
         for r in selected_resources:
+            included_resource_ids.add(r.resource_id)
             excerpt_text = ""
             if r.excerpt and remaining_budget > 0:
-                allowed = min(len(r.excerpt), remaining_budget)
+                allowed_per_source = min(len(r.excerpt), max_excerpt_per_source)
+                allowed = min(allowed_per_source, remaining_budget)
                 excerpt_text = r.excerpt[:allowed]
                 remaining_budget -= len(excerpt_text)
 
@@ -160,7 +189,6 @@ async def run(
         system_prompt=SYSTEM_PROMPT,
     )
 
-
     # Validate citations against Stage 4 resources
     report = validate_explanation(result.explanation, evidence_review.reviewed_resources)
     if not report.is_valid and not auto_repair:
@@ -190,6 +218,20 @@ async def run(
         ended_at=ended_at,
         latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
+    if provider is not None:
+        result.metrics.fill_tokens(provider)
+
+    prompt_tokens = (
+        getattr(getattr(provider, "last_usage_metadata", None), "prompt_token_count", None)
+        or (result.metrics.prompt_tokens if result.metrics else 0)
+        or (len(prompt) // 4)
+    )
+    logger.info(
+        "stage5_prompt_token_count",
+        prompt_token_count=prompt_tokens,
+        prompt_chars=len(prompt),
+        sources_count=len(included_resource_ids),
+    )
 
     logger.info(
         "stage5_concept_mapping",
@@ -199,4 +241,5 @@ async def run(
     )
 
     return result
+
 

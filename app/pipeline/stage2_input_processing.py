@@ -84,6 +84,9 @@ async def run(
         ended_at=ended_at,
         latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
+    if provider is not None:
+        metrics.fill_tokens(provider)
+
 
     logger.info(
         "stage2_learning_plan",

@@ -92,6 +92,24 @@ class StageMetrics(BaseModel):
     total_tokens: int = 0
     cost_usd: float = 0.0
 
+    def fill_tokens(self, response_or_provider: object) -> None:
+        """Fill token counts from response.usage_metadata or provider.last_usage_metadata."""
+        usage = getattr(response_or_provider, "last_usage_metadata", None)
+        if usage is None:
+            usage = getattr(response_or_provider, "usage_metadata", None)
+        if usage is None and isinstance(response_or_provider, dict):
+            usage = response_or_provider.get("usage_metadata")
+        if usage is not None:
+            if isinstance(usage, dict):
+                self.prompt_tokens = int(usage.get("prompt_token_count", 0) or 0)
+                self.completion_tokens = int(usage.get("candidates_token_count", 0) or 0)
+                self.total_tokens = int(usage.get("total_token_count", 0) or 0)
+            else:
+                self.prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+                self.completion_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+                self.total_tokens = int(getattr(usage, "total_token_count", 0) or 0)
+
+
 
 # ── Stage 1 – Developer Goal & Skill Context ──────────────────────────────────
 

@@ -164,12 +164,53 @@ def setup_test_environment(monkeypatch):
                     "Initialize bucket tokens to full capacity",
                 ],
             )
+        from app.pipeline.stage7_output_validation import (
+            GeneratedQuestionItem,
+            GeneratedQuestionsBatch,
+        )
+        if schema == GeneratedQuestionsBatch:
+            return GeneratedQuestionsBatch(
+                questions=[
+                    GeneratedQuestionItem(
+                        concept_id="c1",
+                        question_text="How does token replenishment rate interact with bucket capacity in token bucket algorithms?",
+                        question_type=QuestionType.CONCEPTUAL,
+                        expected_points=["Fixed replenishment rate", "Capacity limits bursts"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c2",
+                        question_text="How do component boundaries and thread-safe operations protect token state under concurrency?",
+                        question_type=QuestionType.EXPLAIN_BACK,
+                        expected_points=["Thread-safe atomic updates", "Protects token state consistency"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c3",
+                        question_text="What are the architectural trade-offs between token bucket and sliding window algorithms?",
+                        question_type=QuestionType.EXERCISE,
+                        expected_points=["Token bucket has O(1) memory", "Sliding window logs store request timestamps"],
+                    ),
+                ]
+            )
         raise ValueError(f"Unexpected schema in fake_generate_structured: {schema}")
 
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", fake_discover_sources)
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", fake_search_repositories)
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", fake_fetch_page)
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_generate_structured)
+
+
+async def _get_passing_answers(resp_id: str) -> list[dict[str, str]]:
+    store = get_session_store()
+    session = await store.get(resp_id)
+    assert session is not None
+    assert len(session.questions) >= 2
+    return [
+        {
+            "question_id": q.question_id,
+            "answer": " ".join(q.expected_points),
+        }
+        for q in session.questions[:2]
+    ]
 
 
 # ── Test 1: Full Happy Path ───────────────────────────────────────────────────
@@ -393,25 +434,7 @@ async def test_passing_answers_unlock_full():
     questions = initial_response.questions
 
     # Provide answers with high token overlap with expected points
-    q1 = questions[0]
-    q2 = questions[1]
-
-    answers = [
-        {
-            "question_id": q1.question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
-        {
-            "question_id": q2.question_id,
-            "answer": (
-                "The readiness gate forces active recall and implementation attempts first, "
-                "which verifies conceptual understanding before code assistance."
-            ),
-        },
-    ]
+    answers = await _get_passing_answers(resp_id)
 
     payload = {
         "response_id": resp_id,
@@ -556,16 +579,8 @@ async def test_one_of_three_answers_does_not_pass():
     assert len(questions) >= 2
 
     # Provide high-quality answer for ONLY the first question
-    q1 = questions[0]
-    answers = [
-        {
-            "question_id": q1.question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        }
-    ]
+    passing_answers = await _get_passing_answers(resp_id)
+    answers = [passing_answers[0]]
 
     payload = {
         "response_id": resp_id,
@@ -607,22 +622,7 @@ async def test_two_step_flow_persists_readiness_and_unlocks_full():
     questions = initial_response.questions
     assert len(questions) >= 2
 
-    passing_answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
-        {
-            "question_id": questions[1].question_id,
-            "answer": (
-                "The readiness gate forces active recall and implementation attempts first, "
-                "which verifies conceptual understanding before code assistance."
-            ),
-        },
-    ]
+    passing_answers = await _get_passing_answers(resp_id)
 
     # Step 1: Submit passing answers with wants_full_code=false
     step1_payload = {
@@ -680,14 +680,9 @@ async def test_wrong_answer_fails_understanding_check():
     questions = initial_response.questions
 
     # One good answer, one completely wrong answer
+    passing_answers = await _get_passing_answers(resp_id)
     answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
+        passing_answers[0],
         {
             "question_id": questions[1].question_id,
             "answer": "Banana potato orange nonsense completely irrelevant.",
@@ -854,6 +849,33 @@ async def test_python_code_ast_parse_retry_succeeds(monkeypatch):
                     sections=[ExplanationSection(title="T", content="Content", citation_resource_ids=["res-docs-1"])],
                 )
             )
+        from app.pipeline.stage7_output_validation import (
+            GeneratedQuestionItem,
+            GeneratedQuestionsBatch,
+        )
+        if schema == GeneratedQuestionsBatch:
+            return GeneratedQuestionsBatch(
+                questions=[
+                    GeneratedQuestionItem(
+                        concept_id="c1",
+                        question_text="Q1",
+                        question_type=QuestionType.CONCEPTUAL,
+                        expected_points=["Fixed replenishment rate", "Capacity limits bursts"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c2",
+                        question_text="Q2",
+                        question_type=QuestionType.EXPLAIN_BACK,
+                        expected_points=["Thread-safe atomic updates", "Protects token state consistency"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c3",
+                        question_text="Q3",
+                        question_type=QuestionType.EXERCISE,
+                        expected_points=["Token bucket has O(1) memory", "Sliding window logs store request timestamps"],
+                    ),
+                ]
+            )
         raise ValueError(f"Unexpected schema: {schema}")
 
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_retry_generate)
@@ -863,22 +885,7 @@ async def test_python_code_ast_parse_retry_succeeds(monkeypatch):
     resp_id = initial_response.response_id
     questions = initial_response.questions
 
-    passing_answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
-        {
-            "question_id": questions[1].question_id,
-            "answer": (
-                "The readiness gate forces active recall and implementation attempts first, "
-                "which verifies conceptual understanding before code assistance."
-            ),
-        },
-    ]
+    passing_answers = await _get_passing_answers(resp_id)
 
     payload = {"response_id": resp_id, "wants_full_code": True, "answers": passing_answers}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -917,6 +924,33 @@ async def test_python_code_ast_parse_retry_fails_cleanly(monkeypatch):
                     sections=[ExplanationSection(title="T", content="Content", citation_resource_ids=["res-docs-1"])],
                 )
             )
+        from app.pipeline.stage7_output_validation import (
+            GeneratedQuestionItem,
+            GeneratedQuestionsBatch,
+        )
+        if schema == GeneratedQuestionsBatch:
+            return GeneratedQuestionsBatch(
+                questions=[
+                    GeneratedQuestionItem(
+                        concept_id="c1",
+                        question_text="Q1",
+                        question_type=QuestionType.CONCEPTUAL,
+                        expected_points=["Fixed replenishment rate", "Capacity limits bursts"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c2",
+                        question_text="Q2",
+                        question_type=QuestionType.EXPLAIN_BACK,
+                        expected_points=["Thread-safe atomic updates", "Protects token state consistency"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c3",
+                        question_text="Q3",
+                        question_type=QuestionType.EXERCISE,
+                        expected_points=["Token bucket has O(1) memory", "Sliding window logs store request timestamps"],
+                    ),
+                ]
+            )
         raise ValueError(f"Unexpected schema: {schema}")
 
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_always_broken)
@@ -926,22 +960,7 @@ async def test_python_code_ast_parse_retry_fails_cleanly(monkeypatch):
     resp_id = initial_response.response_id
     questions = initial_response.questions
 
-    passing_answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
-        {
-            "question_id": questions[1].question_id,
-            "answer": (
-                "The readiness gate forces active recall and implementation attempts first, "
-                "which verifies conceptual understanding before code assistance."
-            ),
-        },
-    ]
+    passing_answers = await _get_passing_answers(resp_id)
 
     # When called via API, returns generic 500 error
     payload = {"response_id": resp_id, "wants_full_code": True, "answers": passing_answers}
@@ -1055,16 +1074,7 @@ async def test_understanding_cooldown_and_max_attempts_cap():
     resp_id = initial_response.response_id
     questions = initial_response.questions
 
-    answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": "Answer 1 covering type safety static checking schema validation.",
-        },
-        {
-            "question_id": questions[1].question_id,
-            "answer": "Answer 2 covering active recall implementation attempt conceptual understanding.",
-        },
-    ]
+    answers = await _get_passing_answers(resp_id)
 
     # Attempt 1: Valid first attempt
     payload = {"response_id": resp_id, "wants_full_code": False, "answers": answers}
@@ -1114,22 +1124,7 @@ async def test_both_unlock_paths_expose_unlocked_by():
     resp_id_a = initial_response.response_id
     questions = initial_response.questions
 
-    passing_answers = [
-        {
-            "question_id": questions[0].question_id,
-            "answer": (
-                "We use type safety and static checking to enforce schema validation "
-                "at architectural boundaries, creating self-documenting domain models."
-            ),
-        },
-        {
-            "question_id": questions[1].question_id,
-            "answer": (
-                "The readiness gate forces active recall and implementation attempts first, "
-                "which verifies conceptual understanding before code assistance."
-            ),
-        },
-    ]
+    passing_answers = await _get_passing_answers(resp_id_a)
 
     payload_a = {
         "response_id": resp_id_a,

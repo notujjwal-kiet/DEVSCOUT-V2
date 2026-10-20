@@ -151,6 +151,33 @@ def mock_stage3_research_dependencies(monkeypatch):
                     )
                 ],
             )
+        from app.pipeline.stage7_output_validation import (
+            GeneratedQuestionItem,
+            GeneratedQuestionsBatch,
+        )
+        if schema == GeneratedQuestionsBatch:
+            return GeneratedQuestionsBatch(
+                questions=[
+                    GeneratedQuestionItem(
+                        concept_id="c1",
+                        question_text="How does token replenishment rate interact with bucket capacity in token bucket algorithms?",
+                        question_type=QuestionType.CONCEPTUAL,
+                        expected_points=["Fixed replenishment rate", "Capacity limits bursts"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c2",
+                        question_text="How do component boundaries and thread-safe operations protect token state under concurrency?",
+                        question_type=QuestionType.EXPLAIN_BACK,
+                        expected_points=["Thread-safe atomic updates", "Protects token state consistency"],
+                    ),
+                    GeneratedQuestionItem(
+                        concept_id="c3",
+                        question_text="What are the architectural trade-offs between token bucket and sliding window algorithms?",
+                        question_type=QuestionType.EXERCISE,
+                        expected_points=["Token bucket has O(1) memory", "Sliding window logs store request timestamps"],
+                    ),
+                ]
+            )
         raise ValueError(f"Unexpected schema in mock: {schema}")
 
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")

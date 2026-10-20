@@ -239,6 +239,7 @@ class GeminiProvider:
         model_name: str | None = None,
         api_key: str | None = None,
         client: genai.Client | None = None,
+        thinking_budget: int | None = None,
     ):
         cfg = None
         try:
@@ -269,6 +270,16 @@ class GeminiProvider:
                 "GEMINI_API_KEY is not set. Please configure GEMINI_API_KEY in .env."
             )
 
+        if thinking_budget is not None:
+            self.thinking_budget = thinking_budget
+        elif cfg and hasattr(cfg, "gemini_thinking_budget"):
+            self.thinking_budget = cfg.gemini_thinking_budget
+        else:
+            self.thinking_budget = 0
+
+        self.last_response: types.GenerateContentResponse | None = None
+        self.last_usage_metadata: types.GenerateContentResponseUsageMetadata | None = None
+
         if client is not None:
             self._client = client
         elif self.api_key:
@@ -290,36 +301,27 @@ class GeminiProvider:
         """Return the underlying genai.Client instance."""
         return self._get_client()
 
+    def _build_thinking_config(
+        self, thinking_budget: int | None | object = ...
+    ) -> types.ThinkingConfig | None:
+        budget = self.thinking_budget if thinking_budget is ... else thinking_budget
+        if budget is not None:
+            return types.ThinkingConfig(thinking_budget=int(budget))
+        return None
+
     async def generate_with_search(
-        self, prompt: str, **kwargs: object
+        self, prompt: str, thinking_budget: int | None = None, **kwargs: object
     ) -> types.GenerateContentResponse:
         """
         Generate content using Gemini with Google Search tool enabled.
         Plain text call only; does not use response_schema or JSON mode.
         """
         client = self._get_client()
+        budget = thinking_budget if thinking_budget is not None else kwargs.get("thinking_budget")
+        tc = self._build_thinking_config(budget)
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
-        )
-        try:
-            return await client.aio.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config,
-            )
-        except Exception as exc:
-            raise _map_gemini_error(exc, self.model_name) from exc
-
-
-    async def generate(
-        self, prompt: str, system_prompt: str | None = None, **kwargs: object
-    ) -> str:
-        """Generate plain text from prompt using Gemini model."""
-        client = self._get_client()
-        config = (
-            types.GenerateContentConfig(system_instruction=system_prompt)
-            if system_prompt
-            else None
+            thinking_config=tc,
         )
         try:
             response = await client.aio.models.generate_content(
@@ -327,6 +329,35 @@ class GeminiProvider:
                 contents=prompt,
                 config=config,
             )
+            self.last_response = response
+            self.last_usage_metadata = getattr(response, "usage_metadata", None)
+            return response
+        except Exception as exc:
+            raise _map_gemini_error(exc, self.model_name) from exc
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        thinking_budget: int | None = None,
+        **kwargs: object,
+    ) -> str:
+        """Generate plain text from prompt using Gemini model."""
+        client = self._get_client()
+        budget = thinking_budget if thinking_budget is not None else kwargs.get("thinking_budget")
+        tc = self._build_thinking_config(budget)
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            thinking_config=tc,
+        )
+        try:
+            response = await client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=config,
+            )
+            self.last_response = response
+            self.last_usage_metadata = getattr(response, "usage_metadata", None)
             return response.text or ""
         except Exception as exc:
             raise _map_gemini_error(exc, self.model_name) from exc
@@ -336,14 +367,18 @@ class GeminiProvider:
         prompt: str,
         schema: type[T],
         system_prompt: str | None = None,
+        thinking_budget: int | None = None,
         **kwargs: object,
     ) -> T:
         """Generate structured output adhering to schema using Gemini model."""
         client = self._get_client()
+        budget = thinking_budget if thinking_budget is not None else kwargs.get("thinking_budget")
+        tc = self._build_thinking_config(budget)
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             response_mime_type="application/json",
             response_schema=schema,
+            thinking_config=tc,
         )
         try:
             response = await client.aio.models.generate_content(
@@ -351,11 +386,14 @@ class GeminiProvider:
                 contents=prompt,
                 config=config,
             )
+            self.last_response = response
+            self.last_usage_metadata = getattr(response, "usage_metadata", None)
             text = response.text or ""
         except Exception as exc:
             raise _map_gemini_error(exc, self.model_name) from exc
 
         return schema.model_validate_json(text)
+
 
 
 def get_llm_provider(

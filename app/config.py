@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     ollama_think: bool = Field(default=False)
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str | None = Field(default=None)
+    gemini_thinking_budget: int = Field(default=0, ge=0)
 
     # ── PostgreSQL ────────────────────────────────────────────────
     database_url: str = Field(
@@ -73,7 +74,7 @@ class Settings(BaseSettings):
     attempt_cooldown_seconds: float = Field(default=30.0, ge=0.0)
 
     # ── Jobs, Security & Session Limits ───────────────────────────
-    pipeline_timeout_seconds: float = Field(default=300.0, ge=1.0)
+    pipeline_timeout_seconds: float = Field(default=480.0, ge=1.0)
     api_keys: str = Field(default="")
     rate_limit_capacity: float = Field(default=10.0, ge=1.0)
     rate_limit_refill_rate: float = Field(default=2.0, ge=0.01)

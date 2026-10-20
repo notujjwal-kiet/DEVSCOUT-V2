@@ -140,29 +140,15 @@ def _fallback_understanding_check_result(
     explanation_result: ExplanationResult,
 ) -> UnderstandingCheckResult:
     """Create fallback understanding questions if Stage 7 fails."""
-    topic = explanation_result.explanation.topic if explanation_result.explanation else "System Architecture"
+    topic = (
+        explanation_result.explanation.topic
+        if explanation_result.explanation
+        else "System Architecture"
+    )
+    concept_nodes = explanation_result.concept_nodes or []
+    fallback_qs = stage7_output_validation.build_fallback_questions(topic, concept_nodes)
     return UnderstandingCheckResult(
-        questions=[
-            UnderstandingQuestion(
-                concept_id="core",
-                question_text=f"Why do we avoid untyped dictionaries across architectural boundaries in {topic}?",
-                question_type=QuestionType.CONCEPTUAL,
-                expected_points=[
-                    "Type safety and static checking",
-                    "Schema validation at boundaries",
-                    "Self-documenting domain models",
-                ],
-            ),
-            UnderstandingQuestion(
-                concept_id="core",
-                question_text="Explain in your own words how the readiness gate prevents passive copy-pasting.",
-                question_type=QuestionType.EXPLAIN_BACK,
-                expected_points=[
-                    "Forces active recall or implementation attempt first",
-                    "Verifies conceptual understanding before code assistance",
-                ],
-            ),
-        ],
+        questions=fallback_qs,
         results=[],
     )
 
@@ -182,6 +168,19 @@ async def run_learning_pipeline(
     """
     cfg = get_settings()
     metrics: list[StageMetrics] = []
+
+    def _record_metrics(m: StageMetrics | None) -> None:
+        if m is not None:
+            metrics.append(m)
+            logger.info(
+                "stage_duration",
+                stage_id=m.stage_id,
+                stage_name=m.stage_name,
+                duration_ms=round(m.latency_ms, 2),
+                prompt_tokens=m.prompt_tokens,
+                completion_tokens=m.completion_tokens,
+                total_tokens=m.total_tokens,
+            )
 
     async def _report_stage(stage_id: int, stage_name: str, pct: float) -> None:
         if on_progress:
@@ -207,8 +206,7 @@ async def run_learning_pipeline(
         current_project=request.project,
         target_skills=request.target_skills,
     )
-    if stage1_result.metrics:
-        metrics.append(stage1_result.metrics)
+    _record_metrics(stage1_result.metrics)
 
     # ── Stage 2: Intent & Learning Plan ───────────────────────────────────────
     await _report_stage(2, "Stage 2: Intent & Learning Plan", 2 / 9)
@@ -222,8 +220,7 @@ async def run_learning_pipeline(
         depth_level=depth,
         provider=provider,
     )
-    if stage2_result.metrics:
-        metrics.append(stage2_result.metrics)
+    _record_metrics(stage2_result.metrics)
 
     # ── Stage 3 & 4: Research Discovery & Evidence Review Loop ────────────────
     max_loops = cfg.max_evidence_retry_loops
@@ -245,8 +242,7 @@ async def run_learning_pipeline(
             github_connector=github_connector,
             http_client=http_client,
         )
-        if stage3_result.metrics:
-            metrics.append(stage3_result.metrics)
+        _record_metrics(stage3_result.metrics)
 
         # Merge discovered resources with previously accumulated resources (deduped by URL)
         seen_res_urls = {r.url for r in accumulated_resources if r.url}
@@ -271,8 +267,7 @@ async def run_learning_pipeline(
             max_retry_loops=max_loops,
             expected_topics=plan_topics,
         )
-        if evidence_result.metrics:
-            metrics.append(evidence_result.metrics)
+        _record_metrics(evidence_result.metrics)
 
         # Accumulate seen URLs to prevent duplicate scraping on retries
         for u in evidence_result.seen_urls:
@@ -317,8 +312,7 @@ async def run_learning_pipeline(
         logger.warning("stage5_failed_degrading_gracefully", error=str(exc))
         stage5_result = _fallback_explanation_result(stage2_result, evidence_result)
 
-    if stage5_result.metrics:
-        metrics.append(stage5_result.metrics)
+    _record_metrics(stage5_result.metrics)
 
     # ── Stage 6: Guided Project Work (Optional) ───────────────────────────────
     await _report_stage(6, "Stage 6: Guided Project Work", 6 / 9)
@@ -328,22 +322,22 @@ async def run_learning_pipeline(
             explanation_result=stage5_result,
             plan_result=stage2_result,
         )
-        if stage6_result.metrics:
-            metrics.append(stage6_result.metrics)
+        _record_metrics(stage6_result.metrics)
     except Exception as exc:
         logger.warning("stage6_failed_degrading_gracefully", error=str(exc))
 
-    # ── Stage 7: Understanding Check (2-3 questions with expected_points) ─────
+    # ── Stage 7: Understanding Check (3 questions across different concepts) ──
     await _report_stage(7, "Stage 7: Understanding Check", 7 / 9)
     try:
         stage7_result = await stage7_output_validation.run(
             explanation_result=stage5_result,
+            provider=provider,
         )
-        if stage7_result.metrics:
-            metrics.append(stage7_result.metrics)
+        _record_metrics(stage7_result.metrics)
     except Exception as exc:
         logger.warning("stage7_failed_degrading_gracefully", error=str(exc))
         stage7_result = _fallback_understanding_check_result(stage5_result)
+        _record_metrics(stage7_result.metrics)
 
     # ── Stage 8: Code Assistance Gate ─────────────────────────────────────────
     await _report_stage(8, "Stage 8: Code Assistance Gate", 8 / 9)
@@ -356,8 +350,7 @@ async def run_learning_pipeline(
             wants_snippet=wants_snippet,
             has_explanation=True,
         )
-        if stage8_result.metrics:
-            metrics.append(stage8_result.metrics)
+        _record_metrics(stage8_result.metrics)
     except Exception as exc:
         logger.warning("stage8_failed_degrading_gracefully", error=str(exc))
         stage8_result = CodeGateResult(
@@ -379,8 +372,7 @@ async def run_learning_pipeline(
             goal_id=stage1_result.goal.goal_id,
             completed_topics=completed_topics,
         )
-        if stage9_result.metrics:
-            metrics.append(stage9_result.metrics)
+        _record_metrics(stage9_result.metrics)
         progress_record = stage9_result.progress
     except Exception as exc:
         logger.warning("stage9_failed_degrading_gracefully", error=str(exc))
