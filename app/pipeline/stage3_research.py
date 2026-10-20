@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.llm.provider import RateLimitError
 from app.models.pipeline import (
     IntentPlanResult,
+    LearningGoal,
     Resource,
     ResourceType,
     SourceDiscoveryResult,
@@ -123,6 +124,8 @@ async def run(
     github_connector: GitHubConnector | None = None,
     http_client: httpx.AsyncClient | None = None,
     concurrency: int = DEFAULT_STAGE3_CONCURRENCY,
+    tech_stack: Sequence[str] | None = None,
+    goal: str | LearningGoal | None = None,
 ) -> SourceDiscoveryResult:
     """
     Stage 3 entry point: Discover multiple authoritative sources for the learning plan.
@@ -154,12 +157,48 @@ async def run(
     if len(topics) > cfg.max_topics_per_run:
         topics = topics[:cfg.max_topics_per_run]
 
+    # Build context prefix from tech_stack and goal
+    context_parts: list[str] = []
+    if tech_stack:
+        for t in tech_stack:
+            clean_t = t.strip()
+            if clean_t and clean_t not in context_parts:
+                context_parts.append(clean_t)
+    if goal:
+        goal_text = goal.title if isinstance(goal, LearningGoal) else str(goal).strip()
+        if goal_text and not goal_text.startswith("goal-"):
+            clean_g = goal_text.split("\n")[0][:60].strip()
+            for w in clean_g.split():
+                if w.lower() not in [p.lower() for p in context_parts]:
+                    context_parts.append(w)
+    context_prefix = " ".join(context_parts).strip()
+
+    # Determine language from tech_stack for GitHub queries
+    lang: str | None = None
+    if tech_stack:
+        for t in tech_stack:
+            tl = t.strip().lower()
+            if tl in {"python", "javascript", "typescript", "go", "rust", "java", "cpp", "c#", "ruby", "php"}:
+                lang = tl
+                break
+            elif tl in {"fastapi", "django", "flask"}:
+                lang = "python"
+                break
+            elif tl in {"react", "node", "express", "vue", "nextjs"}:
+                lang = "javascript"
+                break
+
     # 1. Build 3 query strings (docs, GitHub examples, community) by template for each topic
     discovery_queries: list[tuple[str, ResourceType, str]] = []
     for topic in topics:
-        discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
-        discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
-        discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
+        if context_prefix:
+            discovery_queries.append((f"{context_prefix} {topic} official documentation", ResourceType.DOCS, topic))
+            discovery_queries.append((f"{context_prefix} {topic} github repository example code stars:>50", ResourceType.REPO, topic))
+            discovery_queries.append((f"{context_prefix} {topic} community discussion best practices gotchas", ResourceType.COMMUNITY, topic))
+        else:
+            discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
+            discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
+            discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
 
     owns_client = http_client is None
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)
@@ -208,8 +247,16 @@ async def run(
             nonlocal rate_limited_searches
             async with discovery_sem:
                 try:
+                    if context_prefix or lang:
+                        gh_q = f"{context_prefix} {topic} examples".strip()
+                        if lang:
+                            gh_q += f" language:{lang}"
+                        gh_q += " stars:>50"
+                    else:
+                        gh_q = f"{topic} examples"
+
                     gh_docs = await gh.search_repositories(
-                        query=f"{topic} examples",
+                        query=gh_q,
                         limit=3,
                     )
                     return [

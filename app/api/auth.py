@@ -39,6 +39,13 @@ class TokenBucket:
 import threading
 
 
+class _ClearResult:
+    def __await__(self):
+        async def _noop():
+            return None
+        return _noop().__await__()
+
+
 class RateLimiter:
     """Thread/async safe token bucket collection."""
 
@@ -57,7 +64,12 @@ class RateLimiter:
                 bucket.refill_rate = refill_rate
             return bucket.consume(1.0)
 
-    async def clear(self) -> None:
+    def clear(self) -> _ClearResult:
+        with self._lock:
+            self._buckets.clear()
+        return _ClearResult()
+
+    def reset(self) -> None:
         with self._lock:
             self._buckets.clear()
 

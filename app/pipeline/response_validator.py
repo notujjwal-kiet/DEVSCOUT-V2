@@ -278,18 +278,18 @@ def validate_explanation(
                 )
                 continue
 
-            # 2. Check relevance to claim
-            if not is_source_relevant_to_claim(res, section.title, section.content):
-                issues.append(
-                    f"Section '{section.title}' (index {idx}) cites source '{res.title}' irrelevant to this claim."
-                )
-                continue
-
-            # 3. Check quote-anchored citation
+            # 2. Check quote-anchored citation
             quote = normalize_whitespace(cit.supporting_quote) if cit.supporting_quote else ""
             fetched_text = normalize_whitespace(res.fetched_text)
 
             if fetched_text or quote:
+                # Check relevance to claim for quote-anchored citations
+                if not is_source_relevant_to_claim(res, section.title, section.content):
+                    issues.append(
+                        f"Section '{section.title}' (index {idx}) cites source '{res.title}' irrelevant to this claim."
+                    )
+                    continue
+
                 if not quote:
                     issues.append(
                         f"Section '{section.title}' (index {idx}) citation to '{matched_id}' missing supporting quote."

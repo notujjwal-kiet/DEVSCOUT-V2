@@ -206,8 +206,12 @@ def test_one_of_three_answers_no_full():
 
 
 @pytest.mark.asyncio
-async def test_twenty_parallel_requests_cannot_exceed_cap_or_skip_cooldown():
+async def test_twenty_parallel_requests_cannot_exceed_cap_or_skip_cooldown(monkeypatch):
     """20 concurrent requests cannot exceed the understanding attempt cap or skip the cooldown."""
+    from unittest.mock import AsyncMock
+    # Explicitly disable rate limiter so this tests the attempt cap, not 429s
+    monkeypatch.setattr("app.api.auth.RateLimiter.check", AsyncMock(return_value=True))
+
     resp_id, questions = _setup_test_session()
     answers = [
         {"question_id": q.question_id, "answer": "wrong answer"}

@@ -281,7 +281,6 @@ MALICIOUS_KEYWORDS: set[str] = {
     "exploit",
     "spyware",
     "botnet",
-    "worm",
     "c2-server",
     "phishing",
 }
@@ -301,27 +300,44 @@ def is_source_relevant_to_goal(
     resource: Resource,
     goal: str | LearningGoal | None,
     expected_topics: Sequence[str] | None = None,
+    tech_stack: Sequence[str] | None = None,
 ) -> tuple[bool, str]:
     """
     Evaluate if a candidate resource is relevant and safe for a learning goal.
     Rejects malicious or security-threat sources (e.g. ransomware) and completely
     unrelated sources (e.g. dotfiles/config repos for web API goals).
+    Requires at least one tech_stack term in title, URL, or excerpt when tech_stack is specified.
     Returns (is_relevant, reason).
     """
-    res_text = f"{resource.title} {resource.url} {resource.summary} {resource.topic or ''} {resource.excerpt or ''}"
+    full_res_text = f"{resource.title} {resource.url} {resource.summary} {resource.topic or ''} {resource.excerpt or ''}"
     res_tokens = {
         w.lower()
-        for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", res_text)
+        for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", full_res_text)
     }
 
-    # 1. Malicious / Threat content check (always enforced)
+    # 1. Malicious / Threat content check (regex \b word boundaries, not substrings)
     found_threats = [
         k for k in MALICIOUS_KEYWORDS
-        if k in res_tokens
-        or any(k in part.lower() for part in (resource.title, resource.url, resource.summary, resource.excerpt))
+        if re.search(rf"\b{re.escape(k)}\b", full_res_text, re.IGNORECASE)
     ]
     if found_threats:
         return False, f"Source rejected: untrusted security threat / malware content ({', '.join(set(found_threats))})"
+
+    # 2. Tech stack requirement check (when tech_stack is provided)
+    active_tech_stack: list[str] = []
+    if tech_stack:
+        active_tech_stack = [t.strip() for t in tech_stack if t and t.strip()]
+
+    if active_tech_stack:
+        match_targets = [resource.title or "", resource.url or "", resource.excerpt or ""]
+        has_tech = False
+        for t in active_tech_stack:
+            t_clean = t.lower()
+            if any(re.search(rf"\b{re.escape(t_clean)}\b", target, re.IGNORECASE) for target in match_targets) or (t_clean in (resource.url or "").lower()):
+                has_tech = True
+                break
+        if not has_tech:
+            return False, f"Source rejected: unrelated candidate missing required tech_stack term ({', '.join(active_tech_stack)})"
 
     if goal is None and not expected_topics:
         return True, "Source accepted"
@@ -356,7 +372,7 @@ def is_source_relevant_to_goal(
     if not goal_tokens:
         return True, "Source accepted"
 
-    # 2. Official documentation check
+    # 3. Official documentation check
     domain = extract_domain(resource.url)
     if is_official_docs_domain(domain):
         domain_parts = set(
@@ -370,7 +386,7 @@ def is_source_relevant_to_goal(
         if any(p in goal_tokens for p in domain_parts) or any(t in domain for t in goal_tokens) or any(t in goal_tokens for t in ["python", "api", "docs", "guide"]):
             return True, "Official documentation relevant to goal"
 
-    # 3. Substantive overlap check for repositories and blogs
+    # 4. Substantive overlap check for repositories and blogs
     substantive_res = {t for t in res_tokens if t not in COMMON_STOP_WORDS and len(t) >= 3}
     overlap = goal_tokens & substantive_res
 
@@ -395,24 +411,9 @@ def is_source_relevant_to_claim(
     claim_text = f"{section_title} {section_content}".lower()
     res_text = f"{resource.title} {resource.topic or ''} {resource.summary or ''} {resource.excerpt or ''} {resource.url}".lower()
 
-    # Reject malicious content
-    if any(k in res_text for k in MALICIOUS_KEYWORDS):
+    # Reject malicious content using word boundaries (\b)
+    if any(re.search(rf"\b{re.escape(k)}\b", res_text, re.IGNORECASE) for k in MALICIOUS_KEYWORDS):
         return False
-
-    # Check relevance for FastAPI claims: an irrelevant source (e.g. recipe, unrelated tool) fails
-    if "fastapi" in claim_text:
-        fastapi_related = {
-            "fastapi", "tiangolo", "pydantic", "starlette", "uvicorn",
-            "python", "api", "rest", "endpoint", "routing", "route", "http"
-        }
-        res_words = {w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", res_text)}
-        if not (res_words & fastapi_related):
-            return False
-
-    # If domain is official docs
-    domain = extract_domain(resource.url)
-    if is_official_docs_domain(domain):
-        return True
 
     claim_tokens = {
         w
@@ -425,14 +426,16 @@ def is_source_relevant_to_claim(
         if w not in COMMON_STOP_WORDS
     }
 
-    generic_tech_words = {"docs", "example", "architecture", "foundations", "design", "concept", "code", "guide"}
-    if (claim_tokens & generic_tech_words) and (res_tokens & generic_tech_words):
-        return True
+    # If domain is official docs
+    domain = extract_domain(resource.url)
+    if is_official_docs_domain(domain):
+        domain_parts = {p for p in domain.split(".") if p not in {"com", "org", "dev", "io", "docs"}}
+        if domain_parts & claim_tokens:
+            return True
 
     overlap = claim_tokens & res_tokens
     if not overlap:
-        if resource.topic and any(w in resource.topic.lower() for w in ["bake", "cookie", "recipe", "ransomware", "game", "minecraft"]):
-            return False
+        return False
 
     return True
 

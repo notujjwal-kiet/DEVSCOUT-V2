@@ -3,6 +3,7 @@ import asyncio.base_events
 import ipaddress
 import socket
 import pytest
+from app.api.auth import get_rate_limiter
 from app.config import get_settings
 from app.research.cache import reset_research_cache
 
@@ -10,11 +11,22 @@ DEFAULT_MOCK_PUBLIC_IP = "93.184.216.34"
 
 
 @pytest.fixture(autouse=True)
-def clear_settings_cache():
-    """Reset the lru_cache on get_settings() and research cache before/after each test."""
+def test_isolation(monkeypatch):
+    """
+    Autouse test isolation fixture:
+    (a) reset the rate limiter before each test
+    (b) set GEMINI_API_KEY and GEMINI_MODEL via monkeypatch to dummy values so no test needs .env
+    (c) clear settings and research caches before and after each test
+    """
+    get_rate_limiter().clear()
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy-gemini-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
     get_settings.cache_clear()
     reset_research_cache()
+
     yield
+
+    get_rate_limiter().clear()
     get_settings.cache_clear()
     reset_research_cache()
 

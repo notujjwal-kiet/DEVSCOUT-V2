@@ -263,6 +263,8 @@ async def run_learning_pipeline(
             provider=provider,
             github_connector=github_connector,
             http_client=http_client,
+            tech_stack=request.tech_stack,
+            goal=stage1_result.goal,
         )
         _record_metrics(stage3_result.metrics)
 
@@ -289,6 +291,7 @@ async def run_learning_pipeline(
             max_retry_loops=max_loops,
             expected_topics=plan_topics,
             goal=stage1_result.goal,
+            tech_stack=request.tech_stack,
         )
         _record_metrics(evidence_result.metrics)
 
@@ -404,16 +407,46 @@ async def run_learning_pipeline(
 
     # ── Assemble LearningResponse ─────────────────────────────────────────────
     reviewed_res = evidence_result.reviewed_resources if evidence_result else []
+
+    # Check evidence shortage: if fewer than min_sources_per_topic survive after max loops
+    min_per_topic = cfg.min_sources_per_topic
+    topics = plan_topics or ([t.title for t in stage2_result.plan.milestones] if stage2_result and stage2_result.plan else [])
+
+    is_shortage = False
+    if evidence_result is None or not evidence_result.is_sufficient:
+        is_shortage = True
+    elif not reviewed_res:
+        is_shortage = True
+    elif topics:
+        for t in topics:
+            t_clean = t.strip().lower()
+            matching_count = sum(1 for r in reviewed_res if (r.topic or "").strip().lower() == t_clean)
+            if matching_count < min_per_topic:
+                is_shortage = True
+                break
+    elif len(reviewed_res) < min_per_topic:
+        is_shortage = True
+
+    evidence_status = "insufficient" if is_shortage else "sufficient"
+
     calibrated_conf = calibrate_confidence_score(
         evidence_result=evidence_result,
         explanation=stage5_result.explanation,
         resources=reviewed_res,
     )
+    if is_shortage:
+        calibrated_conf = min(0.35, calibrated_conf)
+
     if stage5_result.explanation:
         stage5_result.explanation.confidence_score = calibrated_conf
+        if is_shortage:
+            # Do not present uncited claims as grounded
+            for s in stage5_result.explanation.sections:
+                if not s.citations:
+                    s.support_status = "unsupported"
 
     warnings: list[ResponseWarning] = []
-    if evidence_result is None or not evidence_result.is_sufficient or not reviewed_res:
+    if is_shortage:
         warnings.append(
             ResponseWarning(
                 severity="critical",
@@ -450,6 +483,7 @@ async def run_learning_pipeline(
         progress=progress_record,
         confidence_score=calibrated_conf,
         quality_score=0.92,
+        evidence_status=evidence_status,
         warnings=warnings,
         metrics=metrics,
     )

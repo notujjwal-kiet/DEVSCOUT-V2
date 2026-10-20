@@ -59,6 +59,7 @@ async def run(
     now: datetime | None = None,
     expected_topics: Sequence[str] | None = None,
     goal: LearningGoal | str | None = None,
+    tech_stack: Sequence[str] | None = None,
 ) -> EvidenceReviewResult:
     """
     Stage 4 entry point: Review and score evidence; trigger loop 4->3 if insufficient.
@@ -116,12 +117,14 @@ async def run(
             res,
             goal=goal,
             expected_topics=expected_topics,
+            tech_stack=tech_stack,
         )
         if not is_rel:
             res.is_rejected = True
             res.rejection_reason = rel_reason
             rejected_resources.append(res)
             flagged_uncertainties.append(rel_reason)
+            logger.info("stage4_source_rejected", url=res.url, reason=rel_reason)
             continue
 
         doc = ResearchDocument(

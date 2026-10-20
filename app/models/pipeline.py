@@ -483,6 +483,7 @@ class LearningResponse(BaseModel):
     progress: ProgressRecord | None = None
     confidence_score: float = Field(default=1.0, ge=0.0, le=1.0)
     quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_status: str = Field(default="sufficient")
     warnings: list[ResponseWarning] = Field(default_factory=list)
     metrics: list[StageMetrics] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
