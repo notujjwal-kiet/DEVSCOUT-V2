@@ -36,15 +36,18 @@ class TokenBucket:
         return False
 
 
+import threading
+
+
 class RateLimiter:
     """Thread/async safe token bucket collection."""
 
     def __init__(self) -> None:
         self._buckets: dict[str, TokenBucket] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def check(self, key: str, capacity: float, refill_rate: float) -> bool:
-        async with self._lock:
+        with self._lock:
             bucket = self._buckets.get(key)
             if bucket is None:
                 bucket = TokenBucket(capacity, refill_rate)
@@ -55,7 +58,7 @@ class RateLimiter:
             return bucket.consume(1.0)
 
     async def clear(self) -> None:
-        async with self._lock:
+        with self._lock:
             self._buckets.clear()
 
 

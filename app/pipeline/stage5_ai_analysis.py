@@ -30,9 +30,10 @@ SYSTEM_PROMPT = (
     "You are a principal software engineer and expert mentor. "
     "Formulate rigorous, pedagogical explanations grounded directly in the provided research excerpts. "
     "Paraphrase concepts in your own pedagogical words; do not copy text verbatim. "
-    "Every section must cite specific resource_ids from the provided sources in citation_resource_ids. "
-    "If any statement or section is not supported by the excerpts, explicitly write "
-    "'[Not backed by sources]' in the content. Do not invent or cite unverified sources."
+    "Every section must include quote-anchored citations: each citation carries resource_id and "
+    "supporting_quote (a verbatim quote of at most 15 words from the cited source text). "
+    "If any statement or section is not supported by the excerpts, explicitly mark it with "
+    "'[Not backed by sources]' in the content and leave citations empty. Do not invent quotes or cite unverified sources."
 )
 
 
@@ -175,9 +176,10 @@ async def run(
         f"{sources_block}\n\n"
         f"STRICT GROUNDING & CITATION RULES:\n"
         f"1. Ground all explanations in the provided excerpts. Paraphrase concepts in your own words; DO NOT copy text verbatim.\n"
-        f"2. In explanation.sections, citation_resource_ids MUST ONLY contain Resource IDs from the Available Verified Resources above.\n"
-        f"3. DO NOT cite phantom IDs or unverified sources.\n"
-        f"4. If a section or claim is not backed by the excerpts, leave citation_resource_ids empty and clearly include '[Not backed by sources]' in the section content.\n"
+        f"2. In explanation.sections, each citation in citations MUST carry resource_id (from the Available Verified Resources above) "
+        f"and supporting_quote (a verbatim quote of max 15 words from the cited resource's text).\n"
+        f"3. DO NOT cite phantom IDs, unverified sources, or invent quotes.\n"
+        f"4. If a section or claim is not backed by the excerpts, leave citations empty and clearly include '[Not backed by sources]' in the section content.\n"
         f"5. Address every milestone/topic listed above across explanation.sections.\n"
         f"6. Provide concept_nodes and concept_edges representing the domain ontology.\n"
     )

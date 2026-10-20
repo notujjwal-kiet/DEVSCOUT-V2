@@ -98,6 +98,9 @@ class OllamaProvider:
         else:
             self._client = None
 
+        self.last_response: dict[str, object] | None = None
+        self.last_usage_data: dict[str, object] | None = None
+
     async def _post_chat(self, payload: dict[str, object]) -> httpx.Response:
         url = f"{self.host.rstrip('/')}/api/chat"
         try:
@@ -145,6 +148,8 @@ class OllamaProvider:
             ) from exc
 
         message = data.get("message")
+        self.last_response = data
+        self.last_usage_data = data
         if isinstance(message, dict):
             return str(message.get("content", ""))
         return str(data.get("response", ""))
@@ -177,6 +182,8 @@ class OllamaProvider:
                 f"Failed to parse JSON response from Ollama host at '{self.host}': {exc}"
             ) from exc
 
+        self.last_response = data
+        self.last_usage_data = data
         message = data.get("message")
         if isinstance(message, dict):
             content = str(message.get("content", ""))

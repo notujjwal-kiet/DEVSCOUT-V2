@@ -25,6 +25,7 @@ import structlog
 from app.config import get_settings
 from app.models.pipeline import (
     EvidenceReviewResult,
+    LearningGoal,
     Resource,
     ResourceType,
     SourceDiscoveryResult,
@@ -35,6 +36,7 @@ from app.research.scoring import (
     extract_domain,
     get_half_life_days,
     is_official_docs_domain,
+    is_source_relevant_to_goal,
     score_document,
 )
 
@@ -56,6 +58,7 @@ async def run(
     max_retry_loops: int | None = None,
     now: datetime | None = None,
     expected_topics: Sequence[str] | None = None,
+    goal: LearningGoal | str | None = None,
 ) -> EvidenceReviewResult:
     """
     Stage 4 entry point: Review and score evidence; trigger loop 4->3 if insufficient.
@@ -105,9 +108,22 @@ async def run(
 
     flagged_uncertainties: list[str] = []
     reviewed_resources: list[Resource] = []
+    rejected_resources: list[Resource] = []
 
-    # 1. Deterministic scoring of each resource using score_document
+    # 1. Deterministic relevance check and scoring of each candidate resource
     for res in discovery_result.resources:
+        is_rel, rel_reason = is_source_relevant_to_goal(
+            res,
+            goal=goal,
+            expected_topics=expected_topics,
+        )
+        if not is_rel:
+            res.is_rejected = True
+            res.rejection_reason = rel_reason
+            rejected_resources.append(res)
+            flagged_uncertainties.append(rel_reason)
+            continue
+
         doc = ResearchDocument(
             resource=res,
             text="",
@@ -308,6 +324,7 @@ async def run(
         is_sufficient=is_sufficient,
         is_fresh=is_fresh,
         reviewed_resources=reviewed_resources,
+        rejected_resources=rejected_resources,
         flagged_uncertainties=flagged_uncertainties,
         needs_more_evidence=needs_more_evidence,
         loop_count=active_loop_count,

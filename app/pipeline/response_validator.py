@@ -17,13 +17,17 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.models.pipeline import (
+    Citation,
     CodeGateLevel,
+    EvidenceReviewResult,
     Explanation,
     ExplanationSection,
     LearningResponse,
     Resource,
+    ResponseWarning,
 )
 from app.research.discovery import normalize_url
+from app.research.scoring import is_source_relevant_to_claim, normalize_whitespace
 
 FENCED_CODE_PATTERN = re.compile(r"```(?:\w+)?\s*\n?(.*?)```", re.DOTALL)
 NOT_BACKED_BY_SOURCES_MARKER = "[Not backed by sources]"
@@ -110,6 +114,91 @@ def _build_resource_lookup(
     return known_ids, url_to_id, id_to_resource
 
 
+def calibrate_confidence_score(
+    evidence_or_sections: Any = None,
+    explanation_or_resources: Any = None,
+    resources: Sequence[Resource] | None = None,
+    *,
+    evidence_result: EvidenceReviewResult | None = None,
+    explanation: Explanation | None = None,
+    **kwargs: Any,
+) -> float:
+    """
+    Calibrate confidence score based on verified evidence sufficiency and section support.
+    - If irrelevant/insufficient sources -> confidence <= 0.35.
+    - Adding a supported section strictly never lowers confidence.
+    - Never uses model-provided confidence values.
+    Supports flexible signatures:
+      calibrate_confidence_score(evidence_result, explanation, resources)
+      calibrate_confidence_score(explanation, resources)
+      calibrate_confidence_score(sections, resources)
+    """
+    if evidence_result is not None:
+        evidence_or_sections = evidence_result
+    if explanation is not None:
+        explanation_or_resources = explanation
+
+    evidence_result: EvidenceReviewResult | None = None
+    explanation: Explanation | None = None
+    res_list: Sequence[Resource] = []
+
+    if isinstance(evidence_or_sections, EvidenceReviewResult):
+        evidence_result = evidence_or_sections
+        explanation = explanation_or_resources
+        res_list = resources or []
+    elif isinstance(evidence_or_sections, Explanation):
+        explanation = evidence_or_sections
+        res_list = explanation_or_resources or []
+    elif isinstance(evidence_or_sections, (list, tuple)):
+        if evidence_or_sections and isinstance(evidence_or_sections[0], ExplanationSection):
+            sections = list(evidence_or_sections)
+            res_list = explanation_or_resources or []
+            total_sections = len(sections)
+            supported_sections = sum(1 for s in sections if s.support_status == "supported")
+            support_ratio = (supported_sections / total_sections) if total_sections > 0 else 0.0
+
+            valid_resources = [r for r in res_list if not getattr(r, "is_rejected", False)]
+            if not valid_resources:
+                score = 0.15 + 0.20 * support_ratio
+                return round(min(0.35, score), 2)
+
+            avg_evidence = sum(r.evidence_score for r in valid_resources) / len(valid_resources)
+            base = 0.50 + 0.30 * min(1.0, avg_evidence)
+            score = base + 0.20 * support_ratio
+            return round(max(0.0, min(1.0, score)), 2)
+        else:
+            res_list = evidence_or_sections
+    else:
+        explanation = explanation_or_resources
+        res_list = resources or []
+
+    total_sections = len(explanation.sections) if explanation and explanation.sections else 0
+    supported_sections = (
+        sum(1 for s in explanation.sections if s.support_status == "supported")
+        if explanation and explanation.sections
+        else 0
+    )
+    support_ratio = (supported_sections / total_sections) if total_sections > 0 else 0.0
+
+    valid_resources = [r for r in (res_list or []) if not getattr(r, "is_rejected", False)]
+    is_sufficient = (
+        evidence_result.is_sufficient
+        if evidence_result is not None
+        else (len(valid_resources) >= 2)
+    )
+
+    if not is_sufficient or not valid_resources:
+        # Confidence <= 0.35 when sources are insufficient
+        score = 0.15 + 0.20 * support_ratio
+        return round(min(0.35, score), 2)
+
+    # When sources are sufficient
+    avg_evidence = sum(r.evidence_score for r in valid_resources) / len(valid_resources)
+    base = 0.50 + 0.30 * min(1.0, avg_evidence)
+    score = base + 0.20 * support_ratio
+    return round(max(0.0, min(1.0, score)), 2)
+
+
 def validate_explanation(
     explanation: Explanation,
     resources: Sequence[Resource],
@@ -118,12 +207,10 @@ def validate_explanation(
     """
     Validate an Explanation against verified Resources.
     Rules:
-    - Every claim/section must cite at least one verified Resource id or URL,
-      OR must be explicitly marked with '[Not backed by sources]'.
-    - Phantom citations (IDs or URLs not present in verified resources) are flagged.
-    - Deterministic support check: computes token overlap between section content
-      and cited resources' excerpts. If below support_threshold, marks section
-      'weakly_supported' (labeled as a weak signal, not verification).
+    - Every citation carries supporting_quote (max 15 words) occurring verbatim in source text.
+    - Missing or not found -> dropped; section with no valid citation -> support_status="unsupported".
+    - Citing a rejected resource ID fails.
+    - Citing an irrelevant source for a claim fails.
     - Confidence score must be in [0.0, 1.0].
     """
     actual_support_threshold = (
@@ -146,16 +233,31 @@ def validate_explanation(
 
     for idx, section in enumerate(explanation.sections):
         valid_cites: list[str] = []
+        valid_citations: list[Citation] = []
         phantom_cites: list[str] = []
 
-        for cite in section.citation_resource_ids:
-            clean_cite = cite.strip()
+        # Gather citations to validate
+        cits_to_check: list[Citation] = []
+        cits_by_id = {c.resource_id: c for c in section.citations}
+        if section.citation_resource_ids is not None and len(section.citation_resource_ids) > 0:
+            for rid in section.citation_resource_ids:
+                if rid in cits_by_id:
+                    cits_to_check.append(cits_by_id[rid])
+                else:
+                    cits_to_check.append(Citation(resource_id=rid, supporting_quote=""))
+        elif section.citation_resource_ids is not None and len(section.citation_resource_ids) == 0:
+            cits_to_check = []
+        elif section.citations:
+            cits_to_check = list(section.citations)
+
+        for cit in cits_to_check:
+            clean_cite = cit.resource_id.strip()
+            matched_id: str | None = None
             if clean_cite in known_ids:
-                valid_cites.append(clean_cite)
+                matched_id = clean_cite
             elif clean_cite in url_to_id:
-                valid_cites.append(url_to_id[clean_cite])
+                matched_id = url_to_id[clean_cite]
             else:
-                matched_id: str | None = None
                 try:
                     norm = normalize_url(clean_cite)
                     if norm in url_to_id:
@@ -163,10 +265,57 @@ def validate_explanation(
                 except Exception:
                     pass
 
-                if matched_id:
-                    valid_cites.append(matched_id)
-                else:
-                    phantom_cites.append(cite)
+            if not matched_id or matched_id not in id_to_resource:
+                phantom_cites.append(clean_cite)
+                continue
+
+            res = id_to_resource[matched_id]
+
+            # 1. Check if resource was rejected
+            if getattr(res, "is_rejected", False):
+                issues.append(
+                    f"Section '{section.title}' (index {idx}) cites rejected resource id '{matched_id}'."
+                )
+                continue
+
+            # 2. Check relevance to claim
+            if not is_source_relevant_to_claim(res, section.title, section.content):
+                issues.append(
+                    f"Section '{section.title}' (index {idx}) cites source '{res.title}' irrelevant to this claim."
+                )
+                continue
+
+            # 3. Check quote-anchored citation
+            quote = normalize_whitespace(cit.supporting_quote) if cit.supporting_quote else ""
+            fetched_text = normalize_whitespace(res.fetched_text)
+
+            if fetched_text or quote:
+                if not quote:
+                    issues.append(
+                        f"Section '{section.title}' (index {idx}) citation to '{matched_id}' missing supporting quote."
+                    )
+                    continue
+                words = quote.split()
+                if len(words) > 15:
+                    issues.append(
+                        f"Section '{section.title}' (index {idx}) supporting quote exceeds 15 words ({len(words)} words)."
+                    )
+                    continue
+                target_text = fetched_text or normalize_whitespace(res.excerpt or res.summary or "")
+                if quote.lower() not in target_text.lower():
+                    issues.append(
+                        f"Section '{section.title}' (index {idx}) supporting quote '{quote}' not found verbatim in resource '{res.title}'."
+                    )
+                    continue
+
+            # Citation is valid!
+            valid_citations.append(Citation(resource_id=matched_id, supporting_quote=quote))
+            if matched_id not in valid_cites:
+                valid_cites.append(matched_id)
+
+        # Update section with valid citations
+        section.citations = valid_citations
+        section.citation_resource_ids = valid_cites
 
         if phantom_cites:
             citations_valid = False
@@ -180,20 +329,26 @@ def validate_explanation(
             or "not backed by sources" in section.content.lower()
         )
 
-        if not valid_cites and not has_unbacked_marker:
-            citations_valid = False
-            issues.append(
-                f"Section '{section.title}' (index {idx}) has no citations and is not marked 'not backed by sources'."
-            )
+        if not valid_cites:
+            section.support_status = "unsupported"
+            section.weakly_supported = False
+            if not has_unbacked_marker:
+                citations_valid = False
+                issues.append(
+                    f"Section '{section.title}' (index {idx}) has no citations and is not marked 'not backed by sources'."
+                )
+        else:
+            section.support_status = "supported"
 
         # Deterministic support check: token overlap with cited resources' excerpts
         cited_resources = [id_to_resource[cid] for cid in valid_cites if cid in id_to_resource]
         cited_excerpts = [r.excerpt for r in cited_resources if r.excerpt and r.excerpt.strip()]
 
-        if cited_excerpts:
+        if cited_excerpts and section.support_status == "supported":
             overlap = compute_token_overlap(section.content, cited_excerpts)
             if overlap < actual_support_threshold:
                 section.weakly_supported = True
+                section.support_status = "weakly_supported"
                 weakly_supported_sections.append(section.title)
                 issues.append(
                     f"Section '{section.title}' (index {idx}) is weakly supported by cited excerpts "
@@ -201,7 +356,7 @@ def validate_explanation(
                 )
             else:
                 section.weakly_supported = False
-        else:
+        elif not cited_excerpts:
             section.weakly_supported = False
 
     if not (0.0 <= explanation.confidence_score <= 1.0):
@@ -390,6 +545,39 @@ def validate_response(response: LearningResponse) -> ValidationReport:
         issues.append(
             f"Invalid explanation confidence_score: {response.explanation.confidence_score}. Must be in [0.0, 1.0]."
         )
+
+    # 5. Calibrate confidence score (scores never come from model-provided values)
+    if response.explanation:
+        calibrated = calibrate_confidence_score(
+            evidence_or_sections=None,
+            explanation_or_resources=response.explanation,
+            resources=response.resources,
+        )
+        response.explanation.confidence_score = calibrated
+        response.confidence_score = calibrated
+
+    # 6. Populate warnings: UNSUPPORTED_CLAIMS and NO_RELIABLE_SOURCES
+    if response.explanation:
+        if any(sec.support_status == "unsupported" for sec in response.explanation.sections):
+            if not any(w.code == "UNSUPPORTED_CLAIMS" for w in response.warnings):
+                response.warnings.append(
+                    ResponseWarning(
+                        severity="warning",
+                        code="UNSUPPORTED_CLAIMS",
+                        message="One or more explanation sections contain unsupported claims.",
+                    )
+                )
+
+    valid_resources = [r for r in response.resources if not getattr(r, "is_rejected", False)]
+    if not valid_resources:
+        if not any(w.code == "NO_RELIABLE_SOURCES" for w in response.warnings):
+            response.warnings.append(
+                ResponseWarning(
+                    severity="critical",
+                    code="NO_RELIABLE_SOURCES",
+                    message="Evidence is insufficient to support reliable answers.",
+                )
+            )
 
     is_valid = schema_valid and citations_valid and code_gate_respected and quality_metrics_present
 

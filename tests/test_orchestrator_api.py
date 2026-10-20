@@ -13,6 +13,7 @@ Zero network calls: fake provider, mocked research discovery, and local session 
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 import pytest

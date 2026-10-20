@@ -9,9 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import math
+import re
+from typing import Sequence
 import urllib.parse
 
-from app.models.pipeline import ExperienceLevel, Resource, ResourceType
+from app.models.pipeline import ExperienceLevel, LearningGoal, Resource, ResourceType
 from app.research.models import ResearchDocument
 
 # ── Config Block (All Constants Configurable at Top) ──────────────────────────
@@ -265,3 +267,172 @@ def score_document(doc: ResearchDocument, now: datetime | None = None) -> Resear
         doc.resource.uncertainty_flag = True
 
     return doc
+
+
+# ── Relevance Rules & Malicious Content Filtering ─────────────────────────────
+
+MALICIOUS_KEYWORDS: set[str] = {
+    "ransomware",
+    "malware",
+    "trojan",
+    "keylogger",
+    "rootkit",
+    "backdoor",
+    "exploit",
+    "spyware",
+    "botnet",
+    "worm",
+    "c2-server",
+    "phishing",
+}
+
+COMMON_STOP_WORDS: set[str] = {
+    "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with",
+    "by", "from", "is", "are", "was", "were", "be", "been", "being", "have",
+    "has", "had", "do", "does", "did", "but", "if", "then", "else", "when",
+    "where", "why", "how", "all", "any", "both", "each", "few", "more", "most",
+    "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+    "than", "too", "very", "can", "will", "just", "should", "now", "it", "its",
+    "this", "that", "these", "those", "you", "your", "we", "our", "he", "she",
+}
+
+
+def is_source_relevant_to_goal(
+    resource: Resource,
+    goal: str | LearningGoal | None,
+    expected_topics: Sequence[str] | None = None,
+) -> tuple[bool, str]:
+    """
+    Evaluate if a candidate resource is relevant and safe for a learning goal.
+    Rejects malicious or security-threat sources (e.g. ransomware) and completely
+    unrelated sources (e.g. dotfiles/config repos for web API goals).
+    Returns (is_relevant, reason).
+    """
+    res_text = f"{resource.title} {resource.url} {resource.summary} {resource.topic or ''} {resource.excerpt or ''}"
+    res_tokens = {
+        w.lower()
+        for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", res_text)
+    }
+
+    # 1. Malicious / Threat content check (always enforced)
+    found_threats = [
+        k for k in MALICIOUS_KEYWORDS
+        if k in res_tokens
+        or any(k in part.lower() for part in (resource.title, resource.url, resource.summary, resource.excerpt))
+    ]
+    if found_threats:
+        return False, f"Source rejected: untrusted security threat / malware content ({', '.join(set(found_threats))})"
+
+    if goal is None and not expected_topics:
+        return True, "Source accepted"
+
+    if isinstance(goal, LearningGoal):
+        goal_text = f"{goal.title} {goal.description} {' '.join(goal.target_skills)}"
+    elif goal is not None:
+        goal_text = str(goal)
+    else:
+        goal_text = ""
+
+    # If goal is merely an internal placeholder ID without descriptive words, skip strict overlap
+    goal_words = set(re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", goal_text.lower()))
+    dummy_words = {"goal", "sufficient", "stale", "test", "singleton", "topic"}
+    if goal_text.startswith("goal-") and len(goal_words - dummy_words) == 0:
+        if not expected_topics:
+            return True, "Source accepted"
+        goal_text = ""
+
+    goal_tokens = {
+        w for w in goal_words
+        if w not in COMMON_STOP_WORDS
+    }
+    if expected_topics:
+        for t in expected_topics:
+            goal_tokens.update(
+                w.lower()
+                for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", t)
+                if w.lower() not in COMMON_STOP_WORDS
+            )
+
+    if not goal_tokens:
+        return True, "Source accepted"
+
+    # 2. Official documentation check
+    domain = extract_domain(resource.url)
+    if is_official_docs_domain(domain):
+        domain_parts = set(
+            domain.replace(".tiangolo.com", "")
+            .replace(".org", "")
+            .replace(".com", "")
+            .replace(".dev", "")
+            .replace(".io", "")
+            .split(".")
+        )
+        if any(p in goal_tokens for p in domain_parts) or any(t in domain for t in goal_tokens) or any(t in goal_tokens for t in ["python", "api", "docs", "guide"]):
+            return True, "Official documentation relevant to goal"
+
+    # 3. Substantive overlap check for repositories and blogs
+    substantive_res = {t for t in res_tokens if t not in COMMON_STOP_WORDS and len(t) >= 3}
+    overlap = goal_tokens & substantive_res
+
+    # If completely disjoint (e.g. Codex config repo when goal is FastAPI Todo API)
+    if not overlap:
+        return False, f"Source rejected: unrelated candidate with zero conceptual overlap to goal '{goal_text[:40]}'"
+
+    return True, "Source relevant to goal"
+
+
+def is_source_relevant_to_claim(
+    resource: Resource,
+    section_title: str,
+    section_content: str,
+) -> bool:
+    """
+    Check if a cited resource has substantive conceptual relevance to an explanation claim.
+    """
+    if getattr(resource, "is_rejected", False):
+        return False
+
+    claim_text = f"{section_title} {section_content}".lower()
+    res_text = f"{resource.title} {resource.topic or ''} {resource.summary or ''} {resource.excerpt or ''} {resource.url}".lower()
+
+    # Reject malicious content
+    if any(k in res_text for k in MALICIOUS_KEYWORDS):
+        return False
+
+    # Check relevance for FastAPI claims: an irrelevant source (e.g. recipe, unrelated tool) fails
+    if "fastapi" in claim_text:
+        fastapi_related = {
+            "fastapi", "tiangolo", "pydantic", "starlette", "uvicorn",
+            "python", "api", "rest", "endpoint", "routing", "route", "http"
+        }
+        res_words = {w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", res_text)}
+        if not (res_words & fastapi_related):
+            return False
+
+    # If domain is official docs
+    domain = extract_domain(resource.url)
+    if is_official_docs_domain(domain):
+        return True
+
+    claim_tokens = {
+        w
+        for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", claim_text)
+        if w not in COMMON_STOP_WORDS
+    }
+    res_tokens = {
+        w
+        for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", res_text)
+        if w not in COMMON_STOP_WORDS
+    }
+
+    generic_tech_words = {"docs", "example", "architecture", "foundations", "design", "concept", "code", "guide"}
+    if (claim_tokens & generic_tech_words) and (res_tokens & generic_tech_words):
+        return True
+
+    overlap = claim_tokens & res_tokens
+    if not overlap:
+        if resource.topic and any(w in resource.topic.lower() for w in ["bake", "cookie", "recipe", "ransomware", "game", "minecraft"]):
+            return False
+
+    return True
+

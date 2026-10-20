@@ -51,6 +51,7 @@ from app.models.pipeline import (
     QuestionType,
     Resource,
     ResourceType,
+    ResponseWarning,
     SourceDiscoveryResult,
     StageMetrics,
     UnderstandingCheckResult,
@@ -68,7 +69,11 @@ from app.pipeline import (
     stage8_decision_report,
     stage9_developer_feedback,
 )
-from app.pipeline.response_validator import repair_response, validate_response
+from app.pipeline.response_validator import (
+    calibrate_confidence_score,
+    repair_response,
+    validate_response,
+)
 from app.pipeline.session_store import (
     SessionData,
     SessionStore,
@@ -83,8 +88,25 @@ from app.pipeline.structured_llm import generate_structured_with_retry
 from app.policy.attempt_review import review_attempt
 from app.policy.code_gate import LearnerReadiness
 from app.research.github import GitHubConnector
+import threading
 
 logger = structlog.get_logger(__name__)
+
+_session_locks: dict[tuple[int, str], asyncio.Lock] = {}
+_session_locks_guard = threading.Lock()
+
+
+def _get_session_lock(response_id: str) -> asyncio.Lock:
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        loop_id = 0
+    key = (loop_id, response_id)
+    with _session_locks_guard:
+        if key not in _session_locks:
+            _session_locks[key] = asyncio.Lock()
+        return _session_locks[key]
 
 
 class SessionNotFoundError(Exception):
@@ -266,6 +288,7 @@ async def run_learning_pipeline(
             loop_count=loop_count,
             max_retry_loops=max_loops,
             expected_topics=plan_topics,
+            goal=stage1_result.goal,
         )
         _record_metrics(evidence_result.metrics)
 
@@ -380,10 +403,39 @@ async def run_learning_pipeline(
     raw_questions = stage7_result.questions if stage7_result else []
 
     # ── Assemble LearningResponse ─────────────────────────────────────────────
+    reviewed_res = evidence_result.reviewed_resources if evidence_result else []
+    calibrated_conf = calibrate_confidence_score(
+        evidence_result=evidence_result,
+        explanation=stage5_result.explanation,
+        resources=reviewed_res,
+    )
+    if stage5_result.explanation:
+        stage5_result.explanation.confidence_score = calibrated_conf
+
+    warnings: list[ResponseWarning] = []
+    if evidence_result is None or not evidence_result.is_sufficient or not reviewed_res:
+        warnings.append(
+            ResponseWarning(
+                severity="critical",
+                code="NO_RELIABLE_SOURCES",
+                message="Evidence is insufficient to support reliable answers.",
+            )
+        )
+    if stage5_result.explanation and any(
+        s.support_status == "unsupported" for s in stage5_result.explanation.sections
+    ):
+        warnings.append(
+            ResponseWarning(
+                severity="warning",
+                code="UNSUPPORTED_CLAIMS",
+                message="One or more explanation sections contain unsupported claims.",
+            )
+        )
+
     response = LearningResponse(
         learner_profile=stage1_result.profile,
         learning_plan=stage2_result.plan,
-        resources=evidence_result.reviewed_resources if evidence_result else [],
+        resources=reviewed_res,
         explanation=stage5_result.explanation,
         snippets=stage8_result.allowed_snippets,
         concept_nodes=stage5_result.concept_nodes,
@@ -396,12 +448,9 @@ async def run_learning_pipeline(
         ),
         code_gate_decision=stage8_result.decision,
         progress=progress_record,
-        confidence_score=(
-            stage5_result.explanation.confidence_score
-            if stage5_result.explanation
-            else 0.9
-        ),
+        confidence_score=calibrated_conf,
         quality_score=0.92,
+        warnings=warnings,
         metrics=metrics,
     )
 
@@ -440,225 +489,226 @@ async def handle_code_request(
       validate Python with ast.parse (retry once on failure), set code_notice.
     - Otherwise: return REQUIRE_CHECK with reasons and questions.
     """
-    store = session_store or get_session_store()
-    session = await store.get(request.response_id)
-    if not session:
-        raise SessionNotFoundError(request.response_id)
+    async with _get_session_lock(request.response_id):
+        store = session_store or get_session_store()
+        session = await store.get(request.response_id)
+        if not session:
+            raise SessionNotFoundError(request.response_id)
 
-    cfg = get_settings()
-    understanding_reason: str | None = None
+        cfg = get_settings()
+        understanding_reason: str | None = None
 
-    # ── Req 1 & 2: Deterministic Answer Evaluation & Attempt Tracking ─────────
-    if request.answers:
-        now = datetime.now(UTC)
+        # ── Req 1 & 2: Deterministic Answer Evaluation & Attempt Tracking ─────────
+        if request.answers:
+            now = datetime.now(UTC)
 
-        # Check attempt cooldown
-        if session.last_understanding_attempt_at is not None and cfg.attempt_cooldown_seconds > 0:
-            elapsed = (now - session.last_understanding_attempt_at).total_seconds()
-            if elapsed < cfg.attempt_cooldown_seconds:
-                remaining = int(cfg.attempt_cooldown_seconds - elapsed) + 1
+            # Check attempt cooldown
+            if session.last_understanding_attempt_at is not None and cfg.attempt_cooldown_seconds > 0:
+                elapsed = (now - session.last_understanding_attempt_at).total_seconds()
+                if elapsed < cfg.attempt_cooldown_seconds:
+                    remaining = int(cfg.attempt_cooldown_seconds - elapsed) + 1
+                    understanding_reason = (
+                        f"Understanding check cooldown active. Please wait {remaining} seconds before retrying."
+                    )
+                    session.understanding_passed = False
+                    logger.info("understanding_check_cooldown_active", remaining=remaining)
+
+            # Check maximum attempts cap
+            if understanding_reason is None and session.understanding_attempt_count >= cfg.max_understanding_attempts:
                 understanding_reason = (
-                    f"Understanding check cooldown active. Please wait {remaining} seconds before retrying."
+                    f"Maximum understanding check attempts ({cfg.max_understanding_attempts}) exceeded for this session."
                 )
                 session.understanding_passed = False
-                logger.info("understanding_check_cooldown_active", remaining=remaining)
+                logger.info("understanding_check_max_attempts_exceeded", count=session.understanding_attempt_count)
 
-        # Check maximum attempts cap
-        if understanding_reason is None and session.understanding_attempt_count >= cfg.max_understanding_attempts:
-            understanding_reason = (
-                f"Maximum understanding check attempts ({cfg.max_understanding_attempts}) exceeded for this session."
-            )
-            session.understanding_passed = False
-            logger.info("understanding_check_max_attempts_exceeded", count=session.understanding_attempt_count)
+            if understanding_reason is None:
+                session.understanding_attempt_count += 1
+                session.last_understanding_attempt_at = now
 
-        if understanding_reason is None:
-            session.understanding_attempt_count += 1
-            session.last_understanding_attempt_at = now
+                questions_to_eval = session.questions if session.questions else session.learning_response.questions
+                known_qids = {q.question_id for q in questions_to_eval}
+                # Filter out unknown question IDs
+                valid_answers = [a for a in request.answers if a.question_id in known_qids]
 
-            questions_to_eval = session.questions if session.questions else session.learning_response.questions
-            eval_results = evaluate_answers(
-                answers=request.answers,
-                questions=questions_to_eval,
-                threshold=cfg.answer_coverage_threshold,
-            )
-            session.understanding_results.extend(eval_results)
-            if eval_results:
-                session.learning_response.understanding_result = eval_results[-1]
-
-            # Map each answered question to its latest evaluation result in this session
-            latest_by_qid: dict[str, UnderstandingResult] = {}
-            for r in session.understanding_results:
-                latest_by_qid[r.question_id] = r
-
-            answered_count = len(latest_by_qid)
-            total_questions = len(questions_to_eval)
-            all_passed = (
-                len(latest_by_qid) > 0
-                and all(r.passed for r in latest_by_qid.values())
-            )
-            completion_ok, completion_err = check_understanding_completion(
-                answered_count=answered_count,
-                total_questions=total_questions,
-                min_questions_answered=cfg.min_questions_answered,
-                min_ratio=0.60,
-            )
-            if completion_ok and all_passed:
-                session.understanding_passed = True
-                logger.info(
-                    "understanding_check_passed",
-                    answered=answered_count,
-                    required=cfg.min_questions_answered,
-                    total=total_questions,
+                eval_results = evaluate_answers(
+                    answers=valid_answers,
+                    questions=questions_to_eval,
+                    threshold=cfg.answer_coverage_threshold,
                 )
+                session.understanding_results.extend(eval_results)
+                if eval_results:
+                    session.learning_response.understanding_result = eval_results[-1]
+
+                # Map each answered question to its latest evaluation result in this session
+                latest_by_qid: dict[str, UnderstandingResult] = {}
+                for r in session.understanding_results:
+                    latest_by_qid[r.question_id] = r
+
+                answered_count = len(latest_by_qid)
+                total_questions = len(questions_to_eval)
+                all_passed = (
+                    len(latest_by_qid) > 0
+                    and all(r.passed for r in latest_by_qid.values())
+                )
+                completion_ok, completion_err = check_understanding_completion(
+                    answered_count=answered_count,
+                    total_questions=total_questions,
+                    min_questions_answered=cfg.min_questions_answered,
+                    min_ratio=0.60,
+                )
+                if completion_ok and all_passed:
+                    session.understanding_passed = True
+                    logger.info(
+                        "understanding_check_passed",
+                        answered=answered_count,
+                        required=cfg.min_questions_answered,
+                        total=total_questions,
+                    )
+                else:
+                    session.understanding_passed = False
+                    understanding_reason = completion_err or "One or more answers did not meet the coverage threshold."
+                    logger.info(
+                        "understanding_check_failed",
+                        answered=answered_count,
+                        required=cfg.min_questions_answered,
+                        total=total_questions,
+                        all_passed=all_passed,
+                        reason=understanding_reason,
+                    )
             else:
-                session.understanding_passed = False
-                understanding_reason = completion_err or "One or more answers did not meet the coverage threshold."
-                logger.info(
-                    "understanding_check_failed",
-                    answered=answered_count,
-                    required=cfg.min_questions_answered,
-                    total=total_questions,
-                    all_passed=all_passed,
-                    reason=understanding_reason,
+                session.learning_response.understanding_result = UnderstandingResult(
+                    question_id=request.answers[0].question_id if request.answers else "general",
+                    passed=False,
+                    learner_response=request.answers[0].answer if request.answers else "",
+                    feedback=understanding_reason,
+                    detected_misconceptions=[understanding_reason],
+                    score=0.0,
                 )
-        else:
-            session.learning_response.understanding_result = UnderstandingResult(
-                question_id=request.answers[0].question_id if request.answers else "general",
-                passed=False,
-                learner_response=request.answers[0].answer if request.answers else "",
-                feedback=understanding_reason,
-                detected_misconceptions=[understanding_reason],
-                score=0.0,
-            )
 
-    # ── Req 2: Attempt Code Review with Relevance & Snippet Similarity ─────────
-    attempt_review_res = None
-    if request.attempt_code:
-        milestone_concepts: list[str] = []
-        lr = session.learning_response
-        if lr.learning_plan and lr.learning_plan.milestones:
-            current_milestone = next(
-                (m for m in lr.learning_plan.milestones if not m.is_completed),
-                lr.learning_plan.milestones[0],
-            )
-            if current_milestone.concepts:
-                milestone_concepts.extend(current_milestone.concepts)
-            elif lr.concept_nodes:
-                milestone_concepts.extend(node.label for node in lr.concept_nodes)
-            else:
-                words = [w for w in re.findall(r"\w+", current_milestone.title.lower()) if len(w) >= 3]
-                milestone_concepts.extend(words)
-
-        attempt_review_res = review_attempt(
-            code=request.attempt_code,
-            language=request.attempt_language or "python",
-            previous_snippet_hashes=session.snippet_hashes,
-            previous_snippets=session.snippets,
-            milestone_concepts=milestone_concepts if milestone_concepts else None,
-        )
-        session.attempt_reviews.append(attempt_review_res)
-
-    # ── Req 2: Build LearnerReadiness from session state (not just current request) ──
-    # understanding_passed comes from the persisted session flag (survives between calls)
-    # attempt_review comes from any ACCEPTABLE attempt ever submitted in this session
-    session_understanding_passed = session.understanding_passed
-    session_acceptable_attempt = next(
-        (r for r in session.attempt_reviews if r.status == AttemptStatus.ACCEPTABLE),
-        None,
-    )
-
-    active_unlocked_by: str | None = None
-    if request.attempt_code and attempt_review_res and attempt_review_res.status == AttemptStatus.ACCEPTABLE:
-        active_unlocked_by = "attempt"
-    elif request.answers and session_understanding_passed:
-        active_unlocked_by = "understanding"
-    elif session_understanding_passed:
-        active_unlocked_by = "understanding"
-    elif session_acceptable_attempt:
-        active_unlocked_by = "attempt"
-
-    readiness = LearnerReadiness(
-        understanding_check_passed=session_understanding_passed,
-        attempt_review=session_acceptable_attempt or attempt_review_res,
-        unlocked_by=active_unlocked_by,
-    )
-
-    # ── Stage 8 Code Gate ─────────────────────────────────────────────────────
-    gate_result = await stage8_decision_report.run(
-        explicit_request=request.wants_full_code,
-        wants_full_code=request.wants_full_code,
-        readiness=readiness,
-        has_explanation=True,
-    )
-
-    if understanding_reason and gate_result.decision.level != CodeGateLevel.FULL:
-        gate_result.decision.reasons.insert(0, understanding_reason)
-
-    # ── Req 4: Full Code Generation ────────────────────────────────────────────
-    if gate_result.decision.level == CodeGateLevel.FULL:
-        if provider is None:
-            provider = GeminiProvider()
-
-        lr = session.learning_response
-        topic = lr.explanation.topic if lr.explanation else "Implementation"
-        goal_title = (
-            session.goal_title
-            or (lr.learning_plan.milestones[0].title if (lr.learning_plan and lr.learning_plan.milestones) else "")
-            or topic
-        )
-        goal_desc = (
-            session.goal_description
-            or (lr.learning_plan.milestones[0].description if (lr.learning_plan and lr.learning_plan.milestones) else "")
-        )
-        milestones_text = ""
-        if lr.learning_plan and lr.learning_plan.milestones:
-            ms_items = "\n".join(
-                f"  - {m.title}: {m.target_outcome}" for m in lr.learning_plan.milestones
-            )
-            milestones_text = f"\nMilestones:\n{ms_items}"
-        tech_stack = ", ".join(lr.learner_profile.tech_stack) or "Python"
-        current_project = lr.learner_profile.current_project or "personal project"
-
-        # Req 4: no "verified" or "production-grade" in prompt
-        prompt = (
-            f"You are a principal software engineer mentoring a developer.\n"
-            f"Goal: {goal_title}\n"
-            f"Description: {goal_desc}\n"
-            f"Current project: {current_project}\n"
-            f"Tech stack: {tech_stack}{milestones_text}\n\n"
-            f"Provide a complete, runnable implementation for the goal above.\n"
-            f"Requirements:\n"
-            f"1. Complete, well-structured, runnable code with clear docstrings.\n"
-            f"2. Comprehensive explanation of the architecture and design decisions.\n"
-            f"3. Line-by-line explanation of key implementation details.\n"
-        )
-        system_prompt = (
-            "You are an expert technical mentor. Generate complete, well-structured code with "
-            "in-depth architectural and line-by-line explanations. Adhere strictly to the requested schema."
-        )
-
-        solution = await generate_structured_with_retry(
-            provider=provider,
-            prompt=prompt,
-            schema=FullCodeSolution,
-            system_prompt=system_prompt,
-        )
-
-        # Req 4: For Python output, validate with ast.parse; retry once on failure
-        code_to_use = solution.code
-        if solution.language.lower() == "python":
-            import ast as _ast
-
-            try:
-                _ast.parse(code_to_use)
-            except SyntaxError as syn_err:
-                logger.warning("ast_parse_failed_retrying", error=str(syn_err))
-                retry_prompt = (
-                    f"{prompt}\n\n"
-                    f"The previous attempt had a Python syntax error: {syn_err}\n"
-                    f"Fix it and return valid, parseable Python code."
+        # ── Req 2: Attempt Code Review with Relevance & Snippet Similarity ─────────
+        attempt_review_res = None
+        if request.attempt_code:
+            milestone_concepts: list[str] = []
+            lr = session.learning_response
+            if lr.learning_plan and lr.learning_plan.milestones:
+                current_milestone = next(
+                    (m for m in lr.learning_plan.milestones if not m.is_completed),
+                    lr.learning_plan.milestones[0],
                 )
+                if current_milestone.concepts:
+                    milestone_concepts.extend(current_milestone.concepts)
+                elif lr.concept_nodes:
+                    milestone_concepts.extend(node.label for node in lr.concept_nodes)
+                else:
+                    words = [w for w in re.findall(r"\w+", current_milestone.title.lower()) if len(w) >= 3]
+                    milestone_concepts.extend(words)
+
+            attempt_review_res = review_attempt(
+                code=request.attempt_code,
+                language=request.attempt_language or "python",
+                previous_snippet_hashes=session.snippet_hashes,
+                previous_snippets=session.snippets,
+                milestone_concepts=milestone_concepts if milestone_concepts else None,
+            )
+            session.attempt_reviews.append(attempt_review_res)
+
+        # ── Req 2: Build LearnerReadiness from session state (not just current request) ──
+        session_understanding_passed = session.understanding_passed
+        session_acceptable_attempt = next(
+            (r for r in session.attempt_reviews if r.status == AttemptStatus.ACCEPTABLE),
+            None,
+        )
+
+        active_unlocked_by: str | None = None
+        if request.attempt_code and attempt_review_res and attempt_review_res.status == AttemptStatus.ACCEPTABLE:
+            active_unlocked_by = "attempt"
+        elif request.answers and session_understanding_passed:
+            active_unlocked_by = "understanding"
+        elif session_understanding_passed:
+            active_unlocked_by = "understanding"
+        elif session_acceptable_attempt:
+            active_unlocked_by = "attempt"
+
+        readiness = LearnerReadiness(
+            understanding_check_passed=session_understanding_passed,
+            attempt_review=session_acceptable_attempt or attempt_review_res,
+            unlocked_by=active_unlocked_by,
+        )
+
+        # ── Stage 8 Code Gate ─────────────────────────────────────────────────────
+        gate_result = await stage8_decision_report.run(
+            explicit_request=request.wants_full_code,
+            wants_full_code=request.wants_full_code,
+            readiness=readiness,
+            has_explanation=True,
+        )
+
+        if understanding_reason and gate_result.decision.level != CodeGateLevel.FULL:
+            gate_result.decision.reasons.insert(0, understanding_reason)
+
+        # ── Req 4: Full Code Generation ────────────────────────────────────────────
+        if gate_result.decision.level == CodeGateLevel.FULL:
+            if provider is None:
+                provider = GeminiProvider()
+
+            lr = session.learning_response
+            topic = lr.explanation.topic if lr.explanation else "Implementation"
+            goal_title = (
+                session.goal_title
+                or (lr.learning_plan.milestones[0].title if (lr.learning_plan and lr.learning_plan.milestones) else "")
+                or topic
+            )
+            goal_desc = (
+                session.goal_description
+                or (lr.learning_plan.milestones[0].description if (lr.learning_plan and lr.learning_plan.milestones) else "")
+            )
+            milestones_text = ""
+            if lr.learning_plan and lr.learning_plan.milestones:
+                ms_items = "\n".join(
+                    f"  - {m.title}: {m.target_outcome}" for m in lr.learning_plan.milestones
+                )
+                milestones_text = f"\nMilestones:\n{ms_items}"
+            tech_stack = ", ".join(lr.learner_profile.tech_stack) or "Python"
+            current_project = lr.learner_profile.current_project or "personal project"
+
+            prompt = (
+                f"You are a principal software engineer mentoring a developer.\n"
+                f"Goal: {goal_title}\n"
+                f"Description: {goal_desc}\n"
+                f"Current project: {current_project}\n"
+                f"Tech stack: {tech_stack}{milestones_text}\n\n"
+                f"Provide a complete, runnable implementation for the goal above.\n"
+                f"Requirements:\n"
+                f"1. Complete, well-structured, runnable code with clear docstrings.\n"
+                f"2. Comprehensive explanation of the architecture and design decisions.\n"
+                f"3. Line-by-line explanation of key implementation details.\n"
+            )
+            system_prompt = (
+                "You are an expert technical mentor. Generate complete, well-structured code with "
+                "in-depth architectural and line-by-line explanations. Adhere strictly to the requested schema."
+            )
+
+            solution = await generate_structured_with_retry(
+                provider=provider,
+                prompt=prompt,
+                schema=FullCodeSolution,
+                system_prompt=system_prompt,
+            )
+
+            # Req 4: For Python output, validate with ast.parse; retry once on failure
+            code_to_use = solution.code
+            if solution.language.lower() == "python":
+                import ast as _ast
+
                 try:
+                    _ast.parse(code_to_use)
+                except SyntaxError as syn_err:
+                    logger.warning("ast_parse_failed_retrying", error=str(syn_err))
+                    retry_prompt = (
+                        f"{prompt}\n\n"
+                        f"The previous attempt had a Python syntax error: {syn_err}\n"
+                        f"Fix it and return valid, parseable Python code."
+                    )
                     retry_solution = await generate_structured_with_retry(
                         provider=provider,
                         prompt=retry_prompt,
@@ -669,52 +719,46 @@ async def handle_code_request(
                     solution = retry_solution
                     code_to_use = retry_solution.code
                     logger.info("ast_parse_retry_succeeded")
-                except (SyntaxError, Exception) as retry_err:
-                    logger.error("ast_parse_retry_failed", error=str(retry_err))
-                    raise ValueError(
-                        f"Generated Python code has a syntax error that could not be fixed: {retry_err}"
-                    ) from retry_err
 
-        session.learning_response.full_code = code_to_use
-        # Req 4: set code_notice
-        session.learning_response.code_notice = "Generated code, not executed or tested."
-        session.learning_response.code_gate_decision = gate_result.decision
-        session.learning_response.unlocked_by = gate_result.decision.unlocked_by
+            session.learning_response.full_code = code_to_use
+            session.learning_response.code_notice = "Generated code, not executed or tested."
+            session.learning_response.code_gate_decision = gate_result.decision
+            session.learning_response.unlocked_by = gate_result.decision.unlocked_by
 
-        if session.learning_response.explanation:
-            first_res_id = (
-                session.learning_response.resources[0].resource_id
-                if session.learning_response.resources
-                else ""
-            )
-            cites = [first_res_id] if first_res_id else []
-            lines_text = "\n".join(f"- {line}" for line in solution.line_by_line_explanation)
-            content = (
-                f"{solution.explanation}\n\n"
-                f"```python\n{code_to_use}\n```\n\n"
-                f"### Line-by-Line Breakdown\n{lines_text}"
-            )
-            session.learning_response.explanation.sections.append(
-                ExplanationSection(
-                    title="Complete Implementation",
-                    content=content,
-                    citation_resource_ids=cites,
+            if session.learning_response.explanation:
+                first_res_id = (
+                    session.learning_response.resources[0].resource_id
+                    if session.learning_response.resources
+                    else ""
                 )
-            )
+                cites = [first_res_id] if first_res_id else []
+                lines_text = "\n".join(f"- {line}" for line in solution.line_by_line_explanation)
+                content = (
+                    f"{solution.explanation}\n\n"
+                    f"```python\n{code_to_use}\n```\n\n"
+                    f"### Line-by-Line Breakdown\n{lines_text}"
+                )
+                session.learning_response.explanation.sections.append(
+                    ExplanationSection(
+                        title="Complete Implementation",
+                        content=content,
+                        citation_resource_ids=cites,
+                    )
+                )
 
-        # Validate through response_validator
-        report = validate_response(session.learning_response)
-        if not report.is_valid:
-            repaired_resp, _ = repair_response(session.learning_response, report)
-            session.learning_response = repaired_resp
+            # Validate through response_validator
+            report = validate_response(session.learning_response)
+            if not report.is_valid:
+                repaired_resp, _ = repair_response(session.learning_response, report)
+                session.learning_response = repaired_resp
 
-    else:
-        # Denied full code: return REQUIRE_CHECK or EXPLAIN with reasons and questions
-        session.learning_response.full_code = None
-        session.learning_response.code_notice = None
-        session.learning_response.code_gate_decision = gate_result.decision
-        session.learning_response.unlocked_by = None
+        else:
+            # Denied full code: return REQUIRE_CHECK or EXPLAIN with reasons and questions
+            session.learning_response.full_code = None
+            session.learning_response.code_notice = None
+            session.learning_response.code_gate_decision = gate_result.decision
+            session.learning_response.unlocked_by = None
 
-    await store.save(session)
-    return session.learning_response
+        await store.save(session)
+        return session.learning_response
 

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        protected_namespaces=("settings_",),
     )
 
     # ── App ───────────────────────────────────────────────────────
@@ -37,6 +38,15 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str | None = Field(default=None)
     gemini_thinking_budget: int = Field(default=0, ge=0)
+    model_pricing_per_1m: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
+            "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+            "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
+            "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
+            "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
+        }
+    )
 
     # ── PostgreSQL ────────────────────────────────────────────────
     database_url: str = Field(
@@ -106,4 +116,47 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached singleton Settings instance."""
     return Settings()
+
+
+def calculate_token_cost(
+    model_name: str | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    is_ollama: bool = False,
+) -> float | None:
+    """
+    Calculate USD cost based on model pricing table per 1M tokens.
+    Rules:
+    - Local Ollama -> 0.0
+    - If model is in pricing table -> calculated cost
+    - Unknown model -> None (0.0 for Ollama)
+    """
+    if is_ollama:
+        return 0.0
+    if not model_name:
+        return None
+    model_lower = str(model_name).strip().lower()
+    if "ollama" in model_lower:
+        return 0.0
+
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+
+    pricing = get_settings().model_pricing_per_1m
+    model_rates = None
+    for k, v in pricing.items():
+        if k.lower() == model_lower or model_lower.startswith(k.lower()):
+            model_rates = v
+            break
+
+    if model_rates is None:
+        return None
+
+    p_tokens = prompt_tokens or 0
+    c_tokens = completion_tokens or 0
+    input_rate = model_rates.get("input", 0.0)
+    output_rate = model_rates.get("output", 0.0)
+
+    cost = (p_tokens * input_rate + c_tokens * output_rate) / 1_000_000.0
+    return round(cost, 6)
 
