@@ -71,13 +71,15 @@ class JobStore:
                 job.result = result
                 job.updated_at = _utcnow()
 
-    async def mark_failed(self, job_id: str, error: str) -> None:
+    async def mark_failed(self, job_id: str, error: str, result: LearningResponse | None = None) -> None:
         """Mark job as FAILED and record error message."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if job:
                 job.status = JobStatus.FAILED
                 job.error = error
+                if result is not None:
+                    job.result = result
                 job.updated_at = _utcnow()
 
     async def mark_timed_out(self, job_id: str, error: str = "Pipeline execution timed out") -> None:

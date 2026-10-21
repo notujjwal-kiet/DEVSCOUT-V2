@@ -14,7 +14,7 @@ import urllib.parse
 import httpx
 import structlog
 
-from app.llm.provider import GeminiProvider
+from app.llm.provider import GeminiProvider, RateLimitError
 from app.models.pipeline import ResourceType
 from app.research.cache import ResearchCache, get_research_cache
 from app.research.models import DiscoveredSource
@@ -127,7 +127,21 @@ async def discover_sources(
         provider = GeminiProvider()
 
     search_prompt = f"Search documentation, repositories, articles, and discussions for: {query.strip()}"
-    response = await provider.generate_with_search(search_prompt)
+    try:
+        response = await provider.generate_with_search(search_prompt)
+        logger.info("grounded_search", query=query.strip(), outcome="ok")
+    except Exception as exc:
+        is_quota = (
+            isinstance(exc, RateLimitError)
+            or isinstance(getattr(exc, "__cause__", None), RateLimitError)
+            or "quota" in str(exc).lower()
+            or "rate limit" in str(exc).lower()
+            or "resource_exhausted" in str(exc).lower()
+            or "429" in str(exc)
+        )
+        outcome = "quota" if is_quota else "error"
+        logger.info("grounded_search", query=query.strip(), outcome=outcome, error=str(exc))
+        raise
 
     # Extract grounding_metadata from first candidate or top-level response
     grounding_metadata = None

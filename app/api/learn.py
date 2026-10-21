@@ -14,7 +14,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.auth import verify_api_key_and_rate_limit
 from app.config import get_settings
-from app.models.pipeline import CodeRequest, LearnJobRecord, LearningResponse, LearnRequest
+from app.llm.provider import RateLimitError
+from app.models.pipeline import (
+    CodeGateDecision,
+    CodeGateLevel,
+    CodeRequest,
+    LearnerProfile,
+    LearnJobRecord,
+    LearningPlan,
+    LearningResponse,
+    LearnRequest,
+    ResponseWarning,
+)
 from app.pipeline.job_store import get_job_store
 from app.pipeline.orchestrator import (
     SessionNotFoundError,
@@ -55,8 +66,39 @@ async def _run_pipeline_job(job_id: str, request: LearnRequest) -> None:
             f"Pipeline execution timed out after {cfg.pipeline_timeout_seconds} seconds",
         )
     except Exception as exc:
-        logger.error("learning_pipeline_job_failed", job_id=job_id, error=str(exc), exc_info=True)
-        await store.mark_failed(job_id, "An internal error occurred during pipeline execution.")
+        is_quota = (
+            isinstance(exc, RateLimitError)
+            or isinstance(getattr(exc, "__cause__", None), RateLimitError)
+            or "quota" in str(exc).lower()
+            or "rate limit" in str(exc).lower()
+            or "resource_exhausted" in str(exc).lower()
+            or "429" in str(exc)
+        )
+        if is_quota:
+            friendly_err = "Model quota exceeded. Try again later or check the Gemini plan."
+            logger.warning("learning_pipeline_job_quota_exceeded", job_id=job_id, error=friendly_err)
+            partial_response = LearningResponse(
+                learner_profile=LearnerProfile(),
+                learning_plan=LearningPlan(goal_id=request.goal[:50]),
+                code_gate_decision=CodeGateDecision(
+                    level=CodeGateLevel.EXPLAIN,
+                    reasons=["Model quota exceeded."],
+                ),
+                confidence_score=0.0,
+                quality_score=0.0,
+                evidence_status="insufficient",
+                warnings=[
+                    ResponseWarning(
+                        severity="warning",
+                        code="PARTIAL_RESULTS",
+                        message="Results are partial due to model quota exhaustion.",
+                    )
+                ],
+            )
+            await store.mark_failed(job_id, friendly_err, result=partial_response.to_public())
+        else:
+            logger.error("learning_pipeline_job_failed", job_id=job_id, error=str(exc), exc_info=True)
+            await store.mark_failed(job_id, "An internal error occurred during pipeline execution.")
 
 
 @router.post(

@@ -652,6 +652,14 @@ async def run_learning_pipeline(
                 message="One or more explanation sections contain unsupported claims.",
             )
         )
+    if all_discovery_errors:
+        warnings.append(
+            ResponseWarning(
+                severity="warning",
+                code="PARTIAL_RESULTS",
+                message="Results are partial due to search rate limits or discovery errors.",
+            )
+        )
 
     # ── Evidence Report Summary ───────────────────────────────────────────────
     rejected_list: list[RejectedSource] = []

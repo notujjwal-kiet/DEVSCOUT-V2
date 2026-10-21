@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     ollama_think: bool = Field(default=False)
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str | None = Field(default=None)
+    gemini_timeout_seconds: float = Field(default=60.0, ge=1.0)
     gemini_timeout: float = Field(default=60.0, ge=1.0)
     gemini_thinking_budget: int = Field(default=0, ge=0)
     model_pricing_per_1m: dict[str, dict[str, float]] = Field(
@@ -67,11 +68,12 @@ class Settings(BaseSettings):
 
     # ── Evidence / research ───────────────────────────────────────
     evidence_cache_ttl_seconds: int = Field(default=86400, ge=0)
+    research_cache_file: str = Field(default="data/research_cache.json")
     web_research_mode: Literal["live", "cached"] = "cached"
     github_token: str | None = Field(default=None)
 
     # ── Pipeline tuning ───────────────────────────────────────────
-    max_evidence_retry_loops: int = Field(default=2, ge=1, le=5)
+    max_evidence_retry_loops: int = Field(default=1, ge=1, le=5)
     confidence_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
     answer_coverage_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     min_questions_answered: int = Field(default=2, ge=1)
@@ -80,8 +82,10 @@ class Settings(BaseSettings):
     min_distinct_source_types: int = Field(default=2, ge=1)
     require_official_or_repo: bool = Field(default=True)
     freshness_stale_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    max_topics_per_run: int = Field(default=5, ge=1)
+    max_topics_per_run: int = Field(default=2, ge=1)
     max_searches_per_run: int = Field(default=15, ge=1)
+    enable_github_queries: bool = Field(default=False)
+    enable_community_queries: bool = Field(default=False)
 
     # ── Excerpts & Evidence Grounding ─────────────────────────────
     max_excerpt_chars: int = Field(default=4000, ge=100)

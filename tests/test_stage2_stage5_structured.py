@@ -347,9 +347,10 @@ def test_repair_explanation_strips_phantom_and_marks_unbacked():
     assert repair_report.repaired is True
     assert repair_report.is_valid is True
 
-    # Section 0 lost phantom citation and got marked [Not backed by sources]
+    # Section 0 lost phantom citation and got marked unsupported, marker stripped from content
     assert repaired_exp.sections[0].citation_resource_ids == []
-    assert NOT_BACKED_BY_SOURCES_MARKER in repaired_exp.sections[0].content
+    assert repaired_exp.sections[0].support_status == "unsupported"
+    assert NOT_BACKED_BY_SOURCES_MARKER not in repaired_exp.sections[0].content
 
     # Section 1 kept only the valid resource id
     assert repaired_exp.sections[1].citation_resource_ids == ["res-redis-docs"]
@@ -391,7 +392,8 @@ async def test_stage5_auto_repair_in_pipeline():
 
     # Validated and repaired
     assert result.explanation.sections[0].citation_resource_ids == []
-    assert NOT_BACKED_BY_SOURCES_MARKER in result.explanation.sections[0].content
+    assert result.explanation.sections[0].support_status == "unsupported"
+    assert NOT_BACKED_BY_SOURCES_MARKER not in result.explanation.sections[0].content
 
 
 @pytest.mark.asyncio

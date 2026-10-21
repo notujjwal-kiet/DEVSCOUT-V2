@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 from typing import Callable, Protocol, TypeVar, runtime_checkable
 
 from google import genai
@@ -243,6 +244,75 @@ def _map_gemini_error(exc: Exception, model_name: str) -> LLMProviderError:
     )
 
 
+def _extract_retry_after(exc: Exception) -> float | None:
+    """Extract retry-after in seconds from exception headers or message."""
+    resp = getattr(exc, "response", None)
+    if resp is not None and hasattr(resp, "headers") and resp.headers:
+        ra = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+        if ra:
+            try:
+                return float(ra)
+            except (ValueError, TypeError):
+                pass
+    text = str(exc)
+    m = re.search(r"retry[-_\s]after[:\s]+(\d+(?:\.\d+)?)", text, re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    m = re.search(r"reset\s+after\s+(\d+(?:\.\d+)?)\s*s", text, re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    m = re.search(r"wait\s+(\d+(?:\.\d+)?)\s*s", text, re.I)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _is_5xx_error(exc: Exception) -> bool:
+    """Check if exception represents a transient 5xx server error."""
+    if isinstance(exc, errors.ServerError):
+        return True
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and 500 <= code < 600:
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and hasattr(resp, "status_code") and isinstance(resp.status_code, int):
+        if 500 <= resp.status_code < 600:
+            return True
+    if isinstance(exc, httpx.HTTPStatusError) and 500 <= exc.response.status_code < 600:
+        return True
+    text = str(exc).lower()
+    if "500 internal" in text or "502 bad gateway" in text or "503 service" in text or "504 gateway" in text:
+        return True
+    return False
+
+
+def _is_429_error(exc: Exception, mapped: LLMProviderError | None = None) -> bool:
+    """Check if exception represents a 429 rate limit or quota exhaustion."""
+    if isinstance(mapped, RateLimitError):
+        return True
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and hasattr(resp, "status_code") and resp.status_code == 429:
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return True
+    text = str(exc).lower()
+    if "429" in text or "quota" in text or "resource_exhausted" in text or "rate limit" in text:
+        return True
+    return False
+
+
 class GeminiProvider:
     """Gemini model provider using official google-genai Python SDK."""
 
@@ -292,6 +362,8 @@ class GeminiProvider:
 
         if timeout is not None:
             self.timeout = float(timeout)
+        elif cfg and hasattr(cfg, "gemini_timeout_seconds"):
+            self.timeout = float(cfg.gemini_timeout_seconds)
         elif cfg and hasattr(cfg, "gemini_timeout"):
             self.timeout = float(cfg.gemini_timeout)
         else:
@@ -300,10 +372,16 @@ class GeminiProvider:
         self.last_response: types.GenerateContentResponse | None = None
         self.last_usage_metadata: types.GenerateContentResponseUsageMetadata | None = None
 
+        timeout_ms = int(self.timeout * 1000)
+        self._http_options = types.HttpOptions(
+            timeout=timeout_ms,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        )
+
         if client is not None:
             self._client = client
         elif self.api_key:
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = genai.Client(api_key=self.api_key, http_options=self._http_options)
         else:
             self._client = None
 
@@ -314,7 +392,12 @@ class GeminiProvider:
             raise LLMProviderError(
                 "GEMINI_API_KEY is not set. Please configure GEMINI_API_KEY in .env."
             )
-        self._client = genai.Client(api_key=self.api_key)
+        timeout_ms = int(self.timeout * 1000)
+        self._http_options = types.HttpOptions(
+            timeout=timeout_ms,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        )
+        self._client = genai.Client(api_key=self.api_key, http_options=self._http_options)
         return self._client
 
     def get_client(self) -> genai.Client:
@@ -344,33 +427,61 @@ class GeminiProvider:
     async def _execute_with_retry(
         self,
         call_fn: Callable[[], object],
-        max_retries: int = 3,
+        max_5xx_retries: int = 3,
     ) -> object:
         """
-        Execute an async Gemini API call with per-call timeout and exponential backoff on RateLimitError.
+        Execute an async Gemini API call.
+        - Per-call timeout (default 60s).
+        - Exponential backoff (max 3 tries) ONLY for transient 5xx.
+        - One short retry honoring retry-after for 429 when retry-after is under 10s; otherwise fail immediately.
         """
         delay = 1.0
-        for attempt in range(max_retries + 1):
+        retried_429 = False
+        attempt_5xx = 0
+
+        while True:
             try:
-                # Per-call timeout (default 60s)
                 return await asyncio.wait_for(call_fn(), timeout=self.timeout)
             except TimeoutError as exc:
                 raise LLMProviderError(f"Gemini call timed out after {self.timeout}s") from exc
             except Exception as exc:
                 mapped = _map_gemini_error(exc, self.model_name)
-                if isinstance(mapped, RateLimitError) and attempt < max_retries:
-                    jitter = random.uniform(0.1, 0.5)
-                    sleep_time = delay + jitter
-                    logger.warning(
-                        "gemini_rate_limited_backing_off",
-                        attempt=attempt + 1,
-                        sleep_seconds=round(sleep_time, 2),
-                        error=str(exc),
-                    )
-                    await asyncio.sleep(sleep_time)
-                    delay *= 2.0
-                else:
+
+                # Transient 5xx retry: up to max_5xx_retries with exponential backoff
+                if _is_5xx_error(exc):
+                    if attempt_5xx < max_5xx_retries:
+                        attempt_5xx += 1
+                        jitter = random.uniform(0.1, 0.5)
+                        sleep_time = delay + jitter
+                        logger.warning(
+                            "gemini_5xx_transient_backing_off",
+                            attempt=attempt_5xx,
+                            sleep_seconds=round(sleep_time, 2),
+                            error=str(exc),
+                        )
+                        await asyncio.sleep(sleep_time)
+                        delay *= 2.0
+                        continue
+                    else:
+                        raise mapped from exc
+
+                # 429 RateLimit / Quota: only one short retry honoring retry-after when under 10s
+                if _is_429_error(exc, mapped):
+                    if not retried_429:
+                        retry_after = _extract_retry_after(exc)
+                        if retry_after is not None and 0.0 <= retry_after < 10.0:
+                            retried_429 = True
+                            logger.warning(
+                                "gemini_429_short_retry_honoring_retry_after",
+                                retry_after=retry_after,
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
+                    # Retry-after is None, >= 10s, or already retried once -> fail immediately!
                     raise mapped from exc
+
+                # Any other error -> fail immediately
+                raise mapped from exc
 
     async def generate_with_search(
         self, prompt: str, thinking_budget: int | None = None, **kwargs: object

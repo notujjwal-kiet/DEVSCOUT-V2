@@ -126,6 +126,8 @@ async def run(
     concurrency: int = DEFAULT_STAGE3_CONCURRENCY,
     tech_stack: Sequence[str] | None = None,
     goal: str | LearningGoal | None = None,
+    enable_github_queries: bool | None = None,
+    enable_community_queries: bool | None = None,
 ) -> SourceDiscoveryResult:
     """
     Stage 3 entry point: Discover multiple authoritative sources for the learning plan.
@@ -188,17 +190,24 @@ async def run(
                 lang = "javascript"
                 break
 
-    # 1. Build 3 query strings (docs, GitHub examples, community) by template for each topic
+    allow_gh_queries = enable_github_queries if enable_github_queries is not None else cfg.enable_github_queries
+    allow_comm_queries = enable_community_queries if enable_community_queries is not None else cfg.enable_community_queries
+
+    # 1. Build query strings for each topic (docs by default; github & community optional/off by default)
     discovery_queries: list[tuple[str, ResourceType, str]] = []
     for topic in topics:
         if context_prefix:
             discovery_queries.append((f"{context_prefix} {topic} official documentation", ResourceType.DOCS, topic))
-            discovery_queries.append((f"{context_prefix} {topic} github repository example code stars:>50", ResourceType.REPO, topic))
-            discovery_queries.append((f"{context_prefix} {topic} community discussion best practices gotchas", ResourceType.COMMUNITY, topic))
+            if allow_gh_queries:
+                discovery_queries.append((f"{context_prefix} {topic} github repository example code stars:>50", ResourceType.REPO, topic))
+            if allow_comm_queries:
+                discovery_queries.append((f"{context_prefix} {topic} community discussion best practices gotchas", ResourceType.COMMUNITY, topic))
         else:
             discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
-            discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
-            discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
+            if allow_gh_queries:
+                discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
+            if allow_comm_queries:
+                discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
 
     owns_client = http_client is None
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)

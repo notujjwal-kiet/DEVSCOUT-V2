@@ -38,7 +38,8 @@ def strip_unbacked_marker(text: str) -> str:
     if not text:
         return text
     cleaned = re.sub(r"\[not backed by sources\]", "", text, flags=re.IGNORECASE)
-    return " ".join(cleaned.split()).strip()
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in cleaned.splitlines()]
+    return "\n".join(lines).strip()
 
 
 # Substantive token extraction for deterministic support checks
@@ -338,11 +339,18 @@ def validate_explanation(
                     f"Section '{section.title}' (index {idx}) cites phantom / nonexistent resource id or url '{pc}'."
                 )
 
+        is_acknowledged_unbacked = (
+            "[not backed by sources]" in section.content.lower()
+            or section.support_status == "unsupported"
+        )
         section.content = strip_unbacked_marker(section.content)
 
         if not valid_cites:
             section.support_status = "unsupported"
             section.weakly_supported = False
+            if not is_acknowledged_unbacked:
+                citations_valid = False
+                issues.append(f"Section '{section.title}' (index {idx}) has no citations.")
         else:
             section.support_status = "supported"
 
@@ -578,6 +586,16 @@ def validate_response(response: LearningResponse) -> ValidationReport:
                     severity="critical",
                     code="NO_RELIABLE_SOURCES",
                     message="Evidence is insufficient to support reliable answers.",
+                )
+            )
+
+    if response.evidence_summary and response.evidence_summary.errors:
+        if not any(w.code == "PARTIAL_RESULTS" for w in response.warnings):
+            response.warnings.append(
+                ResponseWarning(
+                    severity="warning",
+                    code="PARTIAL_RESULTS",
+                    message="Results are partial due to search rate limits or discovery errors.",
                 )
             )
 
