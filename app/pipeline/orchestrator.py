@@ -236,6 +236,7 @@ async def run_learning_pipeline(
     http_client: httpx.AsyncClient | None = None,
     session_store: SessionStore | None = None,
     on_progress: Callable[[int, str, float], Awaitable[None] | None] | None = None,
+    use_cache: bool = False,
 ) -> LearningResponse:
     """
     Run pipeline end-to-end:
@@ -243,6 +244,27 @@ async def run_learning_pipeline(
     Missing or failed optional stages degrade gracefully and never 500.
     """
     cfg = get_settings()
+    if use_cache and not request.refresh:
+        from app.pipeline.request_cache import get_cached_learning_response
+
+        cached = get_cached_learning_response(request)
+        if cached is not None:
+            logger.info("orchestrator_request_cache_hit", goal=request.goal)
+            store = session_store or get_session_store()
+            goal_text = request.goal.strip()
+            goal_title = goal_text.split("\n")[0][:100] if goal_text else "Developer Goal"
+            goal_description = (
+                goal_text if len(goal_text) >= 10 else f"Learn and implement {goal_text}"
+            )
+            session = create_session_from_response(
+                cached,
+                questions=cached.questions,
+                goal_title=goal_title,
+                goal_description=goal_description,
+            )
+            await store.save(session)
+            return cached
+
     metrics: list[StageMetrics] = []
 
     def _record_metrics(m: StageMetrics | None) -> None:
@@ -719,6 +741,10 @@ async def run_learning_pipeline(
         goal_description=goal_description,
     )
     await store.save(session)
+
+    from app.pipeline.request_cache import save_cached_learning_response
+
+    save_cached_learning_response(request, response)
 
     return response
 

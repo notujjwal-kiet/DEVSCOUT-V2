@@ -335,8 +335,10 @@ def test_gemini_thinking_level_vs_budget():
 
 @pytest.mark.asyncio
 async def test_gemini_provider_per_call_timeout_and_backoff():
-    """Verify per-call timeout (default 60s) and exponential backoff on RateLimitError."""
-    p = GeminiProvider(model_name="gemini-2.5-flash", api_key="dummy-key", timeout=0.1)
+    """Verify per-call timeout (default 60s) and exponential backoff on transient 5xx error."""
+    mock_gate = MagicMock()
+    mock_gate.acquire = AsyncMock()
+    p = GeminiProvider(model_name="gemini-2.5-flash", api_key="dummy-key", timeout=0.1, rate_gate=mock_gate)
     assert p.timeout == 0.1
 
     # Test timeout error

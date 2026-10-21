@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     gemini_model: str | None = Field(default=None)
     gemini_timeout_seconds: float = Field(default=60.0, ge=1.0)
     gemini_timeout: float = Field(default=60.0, ge=1.0)
+    gemini_rpm: int = Field(default=4, ge=1)
+    gemini_rpd_limit: int = Field(default=18, ge=1)
+    gemini_quota_file: str = Field(default="data/quota.json")
+    request_cache_file: str = Field(default="data/responses.json")
     gemini_thinking_budget: int = Field(default=0, ge=0)
     model_pricing_per_1m: dict[str, dict[str, float]] = Field(
         default_factory=lambda: {

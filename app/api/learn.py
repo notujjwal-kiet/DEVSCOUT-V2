@@ -48,6 +48,30 @@ async def _run_pipeline_job(job_id: str, request: LearnRequest) -> None:
     async def _on_progress(stage_id: int, stage_name: str, pct: float) -> None:
         await store.update_progress(job_id, stage_id, stage_name, pct)
 
+    if not request.refresh:
+        from app.pipeline.request_cache import get_cached_learning_response
+
+        cached = get_cached_learning_response(request)
+        if cached is not None:
+            logger.info("learn_request_cache_hit", job_id=job_id)
+            from app.pipeline.orchestrator import create_session_from_response
+            from app.pipeline.session_store import get_session_store
+
+            goal_text = request.goal.strip()
+            goal_title = goal_text.split("\n")[0][:100] if goal_text else "Developer Goal"
+            goal_description = (
+                goal_text if len(goal_text) >= 10 else f"Learn and implement {goal_text}"
+            )
+            session = create_session_from_response(
+                cached,
+                questions=cached.questions,
+                goal_title=goal_title,
+                goal_description=goal_description,
+            )
+            await get_session_store().save(session)
+            await store.mark_completed(job_id, cached.to_public())
+            return
+
     try:
         response = await asyncio.wait_for(
             run_learning_pipeline(request, on_progress=_on_progress),
@@ -136,6 +160,14 @@ async def get_learning_job(job_id: str) -> LearnJobRecord:
             detail=f"Job {job_id} not found",
         )
     return job
+
+
+@router.get("/quota", summary="Get Gemini API quota usage and limits")
+async def get_quota() -> dict[str, int]:
+    """Return current daily quota and RPM limits for Gemini API without secrets."""
+    from app.llm.rate_gate import get_rate_gate
+
+    return get_rate_gate().get_quota_status()
 
 
 @router.post("/code-request", response_model=LearningResponse, summary="Request code or submit answers")

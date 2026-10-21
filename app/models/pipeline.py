@@ -501,6 +501,8 @@ class LearningResponse(BaseModel):
     evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
     warnings: list[ResponseWarning] = Field(default_factory=list)
     metrics: list[StageMetrics] = Field(default_factory=list)
+    from_cache: bool = False
+    generated_at: datetime | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
     @field_validator("questions", mode="before")
@@ -561,6 +563,7 @@ class LearnRequest(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     target_skills: list[str] = Field(default_factory=list)
     wants_snippet: bool = Field(default=False)
+    refresh: bool = Field(default=False, description="Bypass request-level response cache if true")
 
 
 class LearnJobRecord(BaseModel):

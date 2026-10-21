@@ -24,6 +24,7 @@ from app.llm.provider import (
     LLMProviderError,
     RateLimitError,
 )
+from app.llm.rate_gate import GeminiRateGate
 from app.models.pipeline import (
     ExperienceLevel,
     JobStatus,
@@ -206,14 +207,14 @@ def test_config_defaults_applied(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stage3_one_query_per_topic_by_default(monkeypatch):
-    """Stage 3 executes only 1 grounded query per topic (docs) by default."""
+async def test_stage3_single_query_per_run_by_default(monkeypatch):
+    """Stage 3 executes a single grounded query per run (docs) by default."""
     from app.models.pipeline import IntentPlanResult, LearningPlan, Milestone
     from app.pipeline import stage3_research
 
     recorded_queries: list[str] = []
 
-    async def fake_discover(query, max_results=5, provider=None, http_client=None):
+    async def fake_discover(query, max_results=8, provider=None, http_client=None):
         recorded_queries.append(query)
         return []
 
@@ -229,17 +230,18 @@ async def test_stage3_one_query_per_topic_by_default(monkeypatch):
         )
     )
 
-    # Default run: should only execute 2 queries total (1 docs query per topic)
+    # Default run: should only execute 1 query total (tech_stack + goal + topics)
     await stage3_research.run(
         plan_result=plan_result,
         tech_stack=["FastAPI", "Python"],
     )
 
-    assert len(recorded_queries) == 2
-    for q in recorded_queries:
-        assert "official documentation" in q
-        assert "stars:>50" not in q
-        assert "gotchas" not in q
+    assert len(recorded_queries) == 1
+    q = recorded_queries[0]
+    assert "FastAPI" in q
+    assert "Python" in q
+    assert "FastAPI Routing" in q
+    assert "Pydantic Schemas" in q
 
     # When optional queries are enabled, 3 queries per topic should be generated
     recorded_queries.clear()
@@ -282,12 +284,11 @@ async def test_gemini_provider_client_http_options(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gemini_provider_5xx_backoff_and_429_short_retry():
+async def test_gemini_provider_5xx_backoff_and_no_429_retry(tmp_path):
     """
     GeminiProvider:
-    - Retries transient 5xx up to 3 times with backoff.
-    - Retries 429 once if retry-after is under 10s.
-    - Fails immediately if retry-after >= 10s or absent.
+    - Retries transient 5xx up to 2 times with backoff.
+    - No automatic retries on 429 or quota errors (fails immediately).
     """
     mock_client = MagicMock()
 
@@ -304,10 +305,13 @@ async def test_gemini_provider_5xx_backoff_and_429_short_retry():
         return resp
 
     mock_client.aio.models.generate_content = flaky_5xx
+    quota_file = str(tmp_path / "test_quota.json")
+    gate = GeminiRateGate(rpm_limit=100, rpd_limit=100, quota_file=quota_file)
     provider = GeminiProvider(
         model_name="gemini-2.5-flash",
         api_key="test-key",
         client=mock_client,
+        rate_gate=gate,
         timeout=10.0,
     )
 
@@ -315,41 +319,22 @@ async def test_gemini_provider_5xx_backoff_and_429_short_retry():
         res = await provider.generate("hello")
         assert res == "Success after 5xx"
         assert call_count == 3
-        assert mock_sleep.call_count == 2
 
-    # 2. 429 with retry-after: 2.0 s -> retries once and succeeds
+    # 2. 429 is not retried: fails immediately on 1st attempt
     call_count_429 = 0
-    async def rate_limited_with_header(*args, **kwargs):
+    async def rate_limited_call(*args, **kwargs):
         nonlocal call_count_429
         call_count_429 += 1
-        if call_count_429 == 1:
-            resp_mock = MagicMock()
-            resp_mock.headers = {"retry-after": "2.0"}
-            resp_mock.status_code = 429
-            raise errors.ClientError(429, {"error": {"message": "Rate limited"}}, resp_mock)
-        resp = MagicMock()
-        resp.text = "Success after 429 retry"
-        resp.usage_metadata = None
-        return resp
-
-    mock_client.aio.models.generate_content = rate_limited_with_header
-    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        res = await provider.generate("hello")
-        assert res == "Success after 429 retry"
-        assert call_count_429 == 2
-        mock_sleep.assert_called_once_with(2.0)
-
-    # 3. 429 with retry-after: 60 s -> fails immediately without sleeping
-    async def long_rate_limit(*args, **kwargs):
         resp_mock = MagicMock()
-        resp_mock.headers = {"retry-after": "60.0"}
+        resp_mock.headers = {"retry-after": "2.0"}
         resp_mock.status_code = 429
         raise errors.ClientError(429, {"error": {"message": "Rate limited"}}, resp_mock)
 
-    mock_client.aio.models.generate_content = long_rate_limit
+    mock_client.aio.models.generate_content = rate_limited_call
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         with pytest.raises(RateLimitError):
             await provider.generate("hello")
+        assert call_count_429 == 1
         mock_sleep.assert_not_called()
 
 

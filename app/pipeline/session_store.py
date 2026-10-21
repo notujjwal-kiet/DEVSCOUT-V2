@@ -168,21 +168,24 @@ def create_session_from_response(
     if response.understanding_result:
         understanding_results.append(response.understanding_result)
 
-    full_questions: list[UnderstandingQuestion] = list(questions or [])
-    if not full_questions and response.questions:
-        for q in response.questions:
-            if isinstance(q, UnderstandingQuestion):
-                full_questions.append(q)
-            else:
-                full_questions.append(
-                    UnderstandingQuestion(
-                        question_id=q.question_id,
-                        concept_id=q.concept_id,
-                        question_text=q.question_text,
-                        question_type=q.question_type,
-                        expected_points=getattr(q, "expected_points", []),
-                    )
+    full_questions: list[UnderstandingQuestion] = []
+    source_questions = questions if questions is not None else (response.questions or [])
+    for q in source_questions:
+        if isinstance(q, UnderstandingQuestion):
+            full_questions.append(q)
+        else:
+            exp_points = list(getattr(q, "expected_points", []) or [])
+            if not exp_points:
+                exp_points = [f"Core architectural and conceptual principles of {q.concept_id or 'the topic'}."]
+            full_questions.append(
+                UnderstandingQuestion(
+                    question_id=q.question_id,
+                    concept_id=q.concept_id,
+                    question_text=q.question_text,
+                    question_type=q.question_type,
+                    expected_points=exp_points,
                 )
+            )
 
     snippets: list[str] = [s.code for s in response.snippets]
     return SessionData(

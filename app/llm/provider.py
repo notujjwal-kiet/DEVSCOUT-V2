@@ -323,6 +323,7 @@ class GeminiProvider:
         client: genai.Client | None = None,
         thinking_budget: int | None = None,
         timeout: float | None = None,
+        rate_gate: object | None = None,
     ):
         cfg = None
         try:
@@ -342,6 +343,7 @@ class GeminiProvider:
                 "GEMINI_MODEL is not set. Please configure GEMINI_MODEL in .env."
             )
         self.model_name = model
+        self.rate_gate = rate_gate
 
         self.api_key = (
             api_key
@@ -427,23 +429,28 @@ class GeminiProvider:
     async def _execute_with_retry(
         self,
         call_fn: Callable[[], object],
-        max_5xx_retries: int = 3,
+        max_5xx_retries: int = 2,
         max_retries: int | None = None,
     ) -> object:
         """
         Execute an async Gemini API call.
-        - Per-call timeout (default 60s).
-        - Exponential backoff (max 3 tries) ONLY for transient 5xx.
-        - One short retry honoring retry-after for 429 when retry-after is under 10s; otherwise fail immediately.
+        - Every call goes through global Gemini rate gate (sliding window RPM + daily budget).
+        - No automatic retries on 429 or quota errors (fails immediately).
+        - Transient 503 gets at most 2 retries with backoff, each counted against daily budget.
         """
         if max_retries is not None:
             max_5xx_retries = max_retries
 
+        from app.llm.rate_gate import get_rate_gate
+
+        gate = getattr(self, "rate_gate", None) or get_rate_gate()
         delay = 1.0
-        retried_429 = False
         attempt_5xx = 0
 
         while True:
+            # Pass through the rate gate before each call (including 5xx retries)
+            await gate.acquire()
+
             try:
                 return await asyncio.wait_for(call_fn(), timeout=self.timeout)
             except TimeoutError as exc:
@@ -469,19 +476,8 @@ class GeminiProvider:
                     else:
                         raise mapped from exc
 
-                # 429 RateLimit / Quota: only one short retry honoring retry-after when under 10s
+                # 429 RateLimit / Quota: NO automatic retries -> fail immediately!
                 if _is_429_error(exc, mapped):
-                    if not retried_429:
-                        retry_after = _extract_retry_after(exc)
-                        if retry_after is not None and 0.0 <= retry_after < 10.0:
-                            retried_429 = True
-                            logger.warning(
-                                "gemini_429_short_retry_honoring_retry_after",
-                                retry_after=retry_after,
-                            )
-                            await asyncio.sleep(retry_after)
-                            continue
-                    # Retry-after is None, >= 10s, or already retried once -> fail immediately!
                     raise mapped from exc
 
                 # Any other error -> fail immediately

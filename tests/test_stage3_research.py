@@ -278,7 +278,7 @@ async def test_stage3_partial_fetch_failure(monkeypatch):
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", mock_fetch_page)
 
     plan_result = _make_plan_result(["Resilience"])
-    result = await stage3_research.run(plan_result)
+    result = await stage3_research.run(plan_result, enable_github_queries=True)
 
     assert isinstance(result, SourceDiscoveryResult)
     # The broken URL was dropped; the 2 good ones remain
@@ -520,7 +520,7 @@ async def test_stage3_max_topics_per_run_cap(monkeypatch):
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repos)
 
     plan_result = _make_plan_result(["Topic 1", "Topic 2", "Topic 3", "Topic 4"])
-    result = await stage3_research.run(plan_result)
+    result = await stage3_research.run(plan_result, enable_github_queries=True)
 
     assert isinstance(result, SourceDiscoveryResult)
     # Only 2 topics should have been queried

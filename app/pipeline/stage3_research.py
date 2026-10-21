@@ -193,21 +193,46 @@ async def run(
     allow_gh_queries = enable_github_queries if enable_github_queries is not None else cfg.enable_github_queries
     allow_comm_queries = enable_community_queries if enable_community_queries is not None else cfg.enable_community_queries
 
-    # 1. Build query strings for each topic (docs by default; github & community optional/off by default)
+    # 1. Build query strings (single grounded discovery call per pass by default; github & community optional/off by default)
     discovery_queries: list[tuple[str, ResourceType, str]] = []
-    for topic in topics:
-        if context_prefix:
-            discovery_queries.append((f"{context_prefix} {topic} official documentation", ResourceType.DOCS, topic))
-            if allow_gh_queries:
-                discovery_queries.append((f"{context_prefix} {topic} github repository example code stars:>50", ResourceType.REPO, topic))
-            if allow_comm_queries:
+    if allow_comm_queries:
+        for topic in topics:
+            if context_prefix:
+                discovery_queries.append((f"{context_prefix} {topic} official documentation", ResourceType.DOCS, topic))
+                if allow_gh_queries:
+                    discovery_queries.append((f"{context_prefix} {topic} github repository example code stars:>50", ResourceType.REPO, topic))
                 discovery_queries.append((f"{context_prefix} {topic} community discussion best practices gotchas", ResourceType.COMMUNITY, topic))
-        else:
-            discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
-            if allow_gh_queries:
-                discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
-            if allow_comm_queries:
+            else:
+                discovery_queries.append((DOCS_QUERY_TEMPLATE.format(topic=topic), ResourceType.DOCS, topic))
+                if allow_gh_queries:
+                    discovery_queries.append((GITHUB_QUERY_TEMPLATE.format(topic=topic), ResourceType.REPO, topic))
                 discovery_queries.append((COMMUNITY_QUERY_TEMPLATE.format(topic=topic), ResourceType.COMMUNITY, topic))
+    else:
+        # Single grounded discovery call per pass built from tech_stack + goal + topic titles joined
+        query_parts: list[str] = []
+        if tech_stack:
+            for t in tech_stack:
+                ct = t.strip()
+                if ct and ct not in query_parts:
+                    query_parts.append(ct)
+        if goal:
+            goal_text = goal.title if isinstance(goal, LearningGoal) else str(goal).strip()
+            if goal_text and not goal_text.startswith("goal-"):
+                clean_g = goal_text.split("\n")[0][:80].strip()
+                for w in clean_g.split():
+                    cw = w.strip()
+                    if cw and cw.lower() not in [p.lower() for p in query_parts]:
+                        query_parts.append(cw)
+        for topic in topics:
+            ct = topic.strip()
+            if ct and ct not in query_parts:
+                query_parts.append(ct)
+
+        single_query = " ".join(query_parts).strip()
+        if not single_query:
+            single_query = "developer documentation"
+
+        discovery_queries.append((single_query, ResourceType.DOCS, topics[0] if topics else "general"))
 
     owns_client = http_client is None
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)
@@ -227,19 +252,26 @@ async def run(
                 try:
                     discovered = await discover_sources(
                         query=q,
-                        max_results=5,
+                        max_results=8,
                         provider=provider,  # type: ignore[arg-type]
                         http_client=active_client,
                     )
-                    return [
-                        _CandidateSource(
-                            url=ds.url,
-                            resource_type=ds.source_type_hint or rtype,
-                            title=ds.title,
-                            topic=topic,
+                    candidates: list[_CandidateSource] = []
+                    for idx, ds in enumerate(discovered):
+                        matching = [
+                            t for t in topics
+                            if t.lower() in (ds.title or "").lower() or t.lower() in (ds.url or "").lower()
+                        ]
+                        assigned_topic = matching[0] if matching else (topics[idx % len(topics)] if topics else topic)
+                        candidates.append(
+                            _CandidateSource(
+                                url=ds.url,
+                                resource_type=ds.source_type_hint or rtype,
+                                title=ds.title,
+                                topic=assigned_topic,
+                            )
                         )
-                        for ds in discovered
-                    ]
+                    return candidates
                 except RateLimitError as exc:
                     rate_limited_searches += 1
                     err_msg = f"Rate limit during web discovery for query '{q}': {exc}"
@@ -309,9 +341,10 @@ async def run(
         for q, rtype, topic in discovery_queries:
             if len(all_tasks) < max_searches:
                 all_tasks.append(_run_discover(q, rtype, topic))
-        for topic in topics:
-            if len(all_tasks) < max_searches:
-                all_tasks.append(_run_github(topic))
+        if allow_gh_queries:
+            for topic in topics:
+                if len(all_tasks) < max_searches:
+                    all_tasks.append(_run_github(topic))
 
         all_gathered = await asyncio.gather(*all_tasks)
 
