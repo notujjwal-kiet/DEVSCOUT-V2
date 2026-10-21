@@ -7,13 +7,18 @@ Provider is chosen by the LLM_PROVIDER environment variable; model names are con
 """
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Protocol, TypeVar, runtime_checkable
+import random
+from typing import Callable, Protocol, TypeVar, runtime_checkable
 
 from google import genai
 from google.genai import errors, types
 import httpx
 from pydantic import BaseModel
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -247,6 +252,7 @@ class GeminiProvider:
         api_key: str | None = None,
         client: genai.Client | None = None,
         thinking_budget: int | None = None,
+        timeout: float | None = None,
     ):
         cfg = None
         try:
@@ -284,6 +290,13 @@ class GeminiProvider:
         else:
             self.thinking_budget = 0
 
+        if timeout is not None:
+            self.timeout = float(timeout)
+        elif cfg and hasattr(cfg, "gemini_timeout"):
+            self.timeout = float(cfg.gemini_timeout)
+        else:
+            self.timeout = 60.0
+
         self.last_response: types.GenerateContentResponse | None = None
         self.last_usage_metadata: types.GenerateContentResponseUsageMetadata | None = None
 
@@ -309,12 +322,55 @@ class GeminiProvider:
         return self._get_client()
 
     def _build_thinking_config(
-        self, thinking_budget: int | None | object = ...
+        self,
+        thinking_budget: int | None | object = ...,
+        thinking_level: str | types.ThinkingLevel | None = None,
     ) -> types.ThinkingConfig | None:
+        model_lower = (self.model_name or "").lower()
+        # Set thinking_level (low) for models that use it (e.g. Gemini 3 series)
+        if "gemini-3" in model_lower or "3." in model_lower:
+            lvl = thinking_level or types.ThinkingLevel.LOW
+            if isinstance(lvl, str):
+                lvl_clean = lvl.upper()
+                lvl = getattr(types.ThinkingLevel, lvl_clean, types.ThinkingLevel.LOW)
+            return types.ThinkingConfig(thinking_level=lvl)
+
+        # Set thinking_budget for models that use a budget (e.g. Gemini 2.5 series)
         budget = self.thinking_budget if thinking_budget is ... else thinking_budget
         if budget is not None:
             return types.ThinkingConfig(thinking_budget=int(budget))
         return None
+
+    async def _execute_with_retry(
+        self,
+        call_fn: Callable[[], object],
+        max_retries: int = 3,
+    ) -> object:
+        """
+        Execute an async Gemini API call with per-call timeout and exponential backoff on RateLimitError.
+        """
+        delay = 1.0
+        for attempt in range(max_retries + 1):
+            try:
+                # Per-call timeout (default 60s)
+                return await asyncio.wait_for(call_fn(), timeout=self.timeout)
+            except TimeoutError as exc:
+                raise LLMProviderError(f"Gemini call timed out after {self.timeout}s") from exc
+            except Exception as exc:
+                mapped = _map_gemini_error(exc, self.model_name)
+                if isinstance(mapped, RateLimitError) and attempt < max_retries:
+                    jitter = random.uniform(0.1, 0.5)
+                    sleep_time = delay + jitter
+                    logger.warning(
+                        "gemini_rate_limited_backing_off",
+                        attempt=attempt + 1,
+                        sleep_seconds=round(sleep_time, 2),
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(sleep_time)
+                    delay *= 2.0
+                else:
+                    raise mapped from exc
 
     async def generate_with_search(
         self, prompt: str, thinking_budget: int | None = None, **kwargs: object
@@ -330,17 +386,21 @@ class GeminiProvider:
             tools=[types.Tool(google_search=types.GoogleSearch())],
             thinking_config=tc,
         )
-        try:
-            response = await client.aio.models.generate_content(
+
+        async def _call() -> types.GenerateContentResponse:
+            return await client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=config,
             )
-            self.last_response = response
-            self.last_usage_metadata = getattr(response, "usage_metadata", None)
-            return response
-        except Exception as exc:
-            raise _map_gemini_error(exc, self.model_name) from exc
+
+        response = await self._execute_with_retry(_call)
+        self.last_response = response
+        self.last_usage_metadata = getattr(response, "usage_metadata", None)
+        thoughts_tokens = getattr(self.last_usage_metadata, "thoughts_token_count", None)
+        if thoughts_tokens is not None:
+            logger.info("gemini_thoughts_token_count", model=self.model_name, thoughts_token_count=thoughts_tokens)
+        return response
 
     async def generate(
         self,
@@ -357,17 +417,21 @@ class GeminiProvider:
             system_instruction=system_prompt,
             thinking_config=tc,
         )
-        try:
-            response = await client.aio.models.generate_content(
+
+        async def _call() -> types.GenerateContentResponse:
+            return await client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=config,
             )
-            self.last_response = response
-            self.last_usage_metadata = getattr(response, "usage_metadata", None)
-            return response.text or ""
-        except Exception as exc:
-            raise _map_gemini_error(exc, self.model_name) from exc
+
+        response = await self._execute_with_retry(_call)
+        self.last_response = response
+        self.last_usage_metadata = getattr(response, "usage_metadata", None)
+        thoughts_tokens = getattr(self.last_usage_metadata, "thoughts_token_count", None)
+        if thoughts_tokens is not None:
+            logger.info("gemini_thoughts_token_count", model=self.model_name, thoughts_token_count=thoughts_tokens)
+        return getattr(response, "text", "") or ""
 
     async def generate_structured(
         self,
@@ -387,17 +451,21 @@ class GeminiProvider:
             response_schema=schema,
             thinking_config=tc,
         )
-        try:
-            response = await client.aio.models.generate_content(
+
+        async def _call() -> types.GenerateContentResponse:
+            return await client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=config,
             )
-            self.last_response = response
-            self.last_usage_metadata = getattr(response, "usage_metadata", None)
-            text = response.text or ""
-        except Exception as exc:
-            raise _map_gemini_error(exc, self.model_name) from exc
+
+        response = await self._execute_with_retry(_call)
+        self.last_response = response
+        self.last_usage_metadata = getattr(response, "usage_metadata", None)
+        thoughts_tokens = getattr(self.last_usage_metadata, "thoughts_token_count", None)
+        if thoughts_tokens is not None:
+            logger.info("gemini_thoughts_token_count", model=self.model_name, thoughts_token_count=thoughts_tokens)
+        text = getattr(response, "text", "") or ""
 
         return schema.model_validate_json(text)
 

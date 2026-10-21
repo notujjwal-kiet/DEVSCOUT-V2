@@ -20,10 +20,12 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 import re
+import time
+import uuid
 import httpx
 import structlog
 
-from app.config import get_settings
+from app.config import SEED_DOCS, get_settings
 from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
     AttemptStatus,
@@ -32,6 +34,7 @@ from app.models.pipeline import (
     CodeGateResult,
     CodeRequest,
     EvidenceReviewResult,
+    EvidenceSummary,
     ExperienceLevel,
     Explanation,
     ExplanationResult,
@@ -49,6 +52,7 @@ from app.models.pipeline import (
     ProgressRecord,
     ProgressReflectionResult,
     QuestionType,
+    RejectedSource,
     Resource,
     ResourceType,
     ResponseWarning,
@@ -72,6 +76,7 @@ from app.pipeline import (
 from app.pipeline.response_validator import (
     calibrate_confidence_score,
     repair_response,
+    strip_unbacked_marker,
     validate_response,
 )
 from app.pipeline.session_store import (
@@ -80,6 +85,7 @@ from app.pipeline.session_store import (
     create_session_from_response,
     get_session_store,
 )
+from app.pipeline.stage3_research import extract_clean_excerpt, fetch_page
 from app.pipeline.stage7_output_validation import (
     check_understanding_completion,
     evaluate_answers,
@@ -88,6 +94,12 @@ from app.pipeline.structured_llm import generate_structured_with_retry
 from app.policy.attempt_review import review_attempt
 from app.policy.code_gate import LearnerReadiness
 from app.research.github import GitHubConnector
+from app.research.models import ResearchDocument
+from app.research.scoring import (
+    hash_content,
+    is_source_relevant_to_goal,
+    score_document,
+)
 import threading
 
 logger = structlog.get_logger(__name__)
@@ -137,8 +149,6 @@ def _fallback_explanation_result(
         f"Core conceptual foundations for {topic}. "
         "Review official documentation and architectural patterns to understand design trade-offs."
     )
-    if not cites:
-        content += " [Not backed by sources]"
 
     return ExplanationResult(
         explanation=Explanation(
@@ -149,6 +159,7 @@ def _fallback_explanation_result(
                     title=f"Architecture Overview: {topic}",
                     content=content,
                     citation_resource_ids=cites,
+                    support_status="supported" if cites else "unsupported",
                 )
             ],
             confidence_score=0.85,
@@ -156,6 +167,49 @@ def _fallback_explanation_result(
         concept_nodes=[],
         concept_edges=[],
     )
+
+
+def compute_quality_score(
+    response: LearningResponse,
+    evidence_status: str,
+) -> float:
+    """
+    Compute quality_score deterministically without model guessing:
+    Formula:
+      quality_score = 0.5 * structure_complete + 0.5 * fraction_supported
+
+    Components:
+      - structure_complete: 1.0 if schema is valid, explanation sections are present,
+        and questions are present; 0.0 otherwise.
+      - fraction_supported: fraction of explanation sections where support_status == "supported"
+        (i.e. supported_sections / total_sections if total_sections > 0 else 0.0).
+
+    Cap:
+      - If evidence_status is "insufficient", quality_score is capped at 0.4:
+        quality_score = min(0.4, quality_score).
+    """
+    sections = response.explanation.sections if response.explanation else []
+    total_sections = len(sections)
+    supported_sections = sum(1 for s in sections if s.support_status == "supported")
+    fraction_supported = (supported_sections / total_sections) if total_sections > 0 else 0.0
+
+    sections_present = total_sections > 0
+    questions_present = len(response.questions) > 0
+    schema_valid = bool(
+        response.learner_profile
+        and response.learning_plan
+        and response.explanation
+        and response.code_gate_decision
+    )
+
+    structure_complete = 1.0 if (schema_valid and sections_present and questions_present) else 0.0
+
+    raw_score = 0.5 * structure_complete + 0.5 * fraction_supported
+
+    if evidence_status == "insufficient":
+        raw_score = min(0.4, raw_score)
+
+    return round(raw_score, 3)
 
 
 def _fallback_understanding_check_result(
@@ -214,6 +268,8 @@ async def run_learning_pipeline(
                 pass
 
     # ── Stage 1: Developer Goal & Skill Context ───────────────────────────────
+    logger.info("stage 1 start")
+    _t1 = time.perf_counter()
     await _report_stage(1, "Stage 1: Developer Goal & Skill Context", 1 / 9)
     goal_text = request.goal.strip()
     goal_title = goal_text.split("\n")[0][:100] if goal_text else "Developer Goal"
@@ -229,8 +285,11 @@ async def run_learning_pipeline(
         target_skills=request.target_skills,
     )
     _record_metrics(stage1_result.metrics)
+    logger.info(f"stage 1 done in {time.perf_counter() - _t1:.1f}s")
 
     # ── Stage 2: Intent & Learning Plan ───────────────────────────────────────
+    logger.info("stage 2 start")
+    _t2 = time.perf_counter()
     await _report_stage(2, "Stage 2: Intent & Learning Plan", 2 / 9)
     depth = (
         "intermediate"
@@ -242,7 +301,15 @@ async def run_learning_pipeline(
         depth_level=depth,
         provider=provider,
     )
+    # Ensure server-generated plan_id and created_at exist
+    if stage2_result.plan:
+        if not getattr(stage2_result.plan, "plan_id", None):
+            stage2_result.plan.plan_id = str(uuid.uuid4())
+        if not getattr(stage2_result.plan, "created_at", None):
+            stage2_result.plan.created_at = datetime.now(UTC)
+
     _record_metrics(stage2_result.metrics)
+    logger.info(f"stage 2 done in {time.perf_counter() - _t2:.1f}s")
 
     # ── Stage 3 & 4: Research Discovery & Evidence Review Loop ────────────────
     max_loops = cfg.max_evidence_retry_loops
@@ -253,7 +320,13 @@ async def run_learning_pipeline(
     plan_topics = stage3_research.extract_topics(stage2_result)
     only_topics: list[str] | None = None
 
+    total_discovered_count = 0
+    total_fetched_count = 0
+    all_discovery_errors: list[str] = []
+
     while loop_count <= max_loops:
+        logger.info("stage 3 start")
+        _t3 = time.perf_counter()
         await _report_stage(3, "Stage 3: Research Discovery", 3 / 9)
         stage3_result = await stage3_research.run(
             plan_result=stage2_result,
@@ -266,7 +339,11 @@ async def run_learning_pipeline(
             tech_stack=request.tech_stack,
             goal=stage1_result.goal,
         )
+        total_discovered_count += stage3_result.discovered_count
+        total_fetched_count += stage3_result.fetched_count
+        all_discovery_errors.extend(stage3_result.errors)
         _record_metrics(stage3_result.metrics)
+        logger.info(f"stage 3 done in {time.perf_counter() - _t3:.1f}s")
 
         # Merge discovered resources with previously accumulated resources (deduped by URL)
         seen_res_urls = {r.url for r in accumulated_resources if r.url}
@@ -280,10 +357,15 @@ async def run_learning_pipeline(
         combined_discovery = SourceDiscoveryResult(
             goal_id=stage3_result.goal_id,
             resources=list(accumulated_resources),
+            discovered_count=total_discovered_count,
+            fetched_count=total_fetched_count,
+            errors=all_discovery_errors,
             loop_count=loop_count,
             metrics=stage3_result.metrics,
         )
 
+        logger.info("stage 4 start")
+        _t4 = time.perf_counter()
         await _report_stage(4, "Stage 4: Evidence Review & Validation", 4 / 9)
         evidence_result = await stage4_evidence_validation.run(
             discovery_result=combined_discovery,
@@ -294,6 +376,7 @@ async def run_learning_pipeline(
             tech_stack=request.tech_stack,
         )
         _record_metrics(evidence_result.metrics)
+        logger.info(f"stage 4 done in {time.perf_counter() - _t4:.1f}s")
 
         # Accumulate seen URLs to prevent duplicate scraping on retries
         for u in evidence_result.seen_urls:
@@ -325,7 +408,95 @@ async def run_learning_pipeline(
                 r.uncertainty_flag = True
             break
 
+    # ── Seed Documentation Fallback ───────────────────────────────────────────
+    # If fewer than min_sources_per_topic sources are accepted after the loops,
+    # fetch the matching seeds through the SSRF-safe fetch_page, pass them through
+    # the same relevance gate, and label them origin="curated". If a URL fails, skip it.
+    accepted_after_loops = evidence_result.reviewed_resources if evidence_result else []
+    seed_shortage = False
+    if not accepted_after_loops or len(accepted_after_loops) < cfg.min_sources_per_topic:
+        seed_shortage = True
+    elif plan_topics:
+        for t in plan_topics:
+            t_clean = t.strip().lower()
+            if sum(1 for r in accepted_after_loops if (r.topic or "").strip().lower() == t_clean) < cfg.min_sources_per_topic:
+                seed_shortage = True
+                break
+
+    if seed_shortage:
+        seed_map = cfg.seed_docs if hasattr(cfg, "seed_docs") else SEED_DOCS
+        matching_seed_items: list[tuple[str, str]] = []
+        for term in (request.tech_stack or []):
+            term_clean = term.strip().lower()
+            if term_clean in seed_map:
+                matching_seed_items.append((term, seed_map[term_clean]))
+            else:
+                for k, v in seed_map.items():
+                    if k in term_clean or term_clean in k:
+                        matching_seed_items.append((term, v))
+
+        seen_seed_urls = {r.url for r in accepted_after_loops if r.url}
+        unique_seeds: list[tuple[str, str]] = []
+        for term, s_url in matching_seed_items:
+            if s_url not in seen_seed_urls:
+                seen_seed_urls.add(s_url)
+                unique_seeds.append((term, s_url))
+
+        for term, seed_url in unique_seeds:
+            total_discovered_count += 1
+            try:
+                doc = await fetch_page(
+                    url=seed_url,
+                    resource_type=ResourceType.DOCS,
+                    client=http_client,
+                )
+                total_fetched_count += 1
+                seed_res = doc.resource
+                seed_res.origin = "curated"
+                seed_res.title = doc.resource.title or f"{term} Official Documentation"
+                seed_res.excerpt = extract_clean_excerpt(doc.text, max_chars=cfg.max_excerpt_chars)
+                seed_res.content_hash = hash_content(doc.text)
+                seed_res.last_updated = doc.last_updated
+                seed_res.popularity = doc.popularity
+                seed_res.topic = plan_topics[0] if plan_topics else "documentation"
+                seed_res.reliability = 0.0
+                seed_res.freshness_score = 0.0
+                seed_res.uncertainty_flag = False
+
+                # Pass through same relevance gate
+                is_rel, rel_reason = is_source_relevant_to_goal(
+                    seed_res,
+                    goal=stage1_result.goal,
+                    expected_topics=plan_topics,
+                    tech_stack=request.tech_stack,
+                )
+                if is_rel:
+                    scored_doc = score_document(
+                        ResearchDocument(
+                            resource=seed_res,
+                            text=doc.text,
+                            last_updated=seed_res.last_updated,
+                            popularity=seed_res.popularity,
+                        )
+                    )
+                    scored_res = scored_doc.resource
+                    scored_res.origin = "curated"
+                    if evidence_result:
+                        evidence_result.reviewed_resources.append(scored_res)
+                    logger.info("seed_source_accepted", url=seed_url, term=term)
+                else:
+                    seed_res.is_rejected = True
+                    seed_res.rejection_reason = rel_reason
+                    if evidence_result:
+                        evidence_result.rejected_resources.append(seed_res)
+                    logger.info("seed_source_rejected_by_gate", url=seed_url, reason=rel_reason)
+            except Exception as exc:
+                logger.warning("seed_doc_fetch_failed_skipping", url=seed_url, error=str(exc))
+                all_discovery_errors.append(f"Failed to fetch seed doc '{seed_url}': {exc}")
+
     # ── Stage 5: Explanation & Concept Mapping ────────────────────────────────
+    logger.info("stage 5 start")
+    _t5 = time.perf_counter()
     await _report_stage(5, "Stage 5: Explanation & Concept Mapping", 5 / 9)
     try:
         stage5_result = await stage5_ai_analysis.run(
@@ -339,8 +510,11 @@ async def run_learning_pipeline(
         stage5_result = _fallback_explanation_result(stage2_result, evidence_result)
 
     _record_metrics(stage5_result.metrics)
+    logger.info(f"stage 5 done in {time.perf_counter() - _t5:.1f}s")
 
     # ── Stage 6: Guided Project Work (Optional) ───────────────────────────────
+    logger.info("stage 6 start")
+    _t6 = time.perf_counter()
     await _report_stage(6, "Stage 6: Guided Project Work", 6 / 9)
     stage6_result: GuidedWorkResult | None = None
     try:
@@ -352,12 +526,17 @@ async def run_learning_pipeline(
     except Exception as exc:
         logger.warning("stage6_failed_degrading_gracefully", error=str(exc))
 
+    logger.info(f"stage 6 done in {time.perf_counter() - _t6:.1f}s")
+
     # ── Stage 7: Understanding Check (3 questions across different concepts) ──
+    logger.info("stage 7 start")
+    _t7 = time.perf_counter()
     await _report_stage(7, "Stage 7: Understanding Check", 7 / 9)
     try:
         stage7_result = await stage7_output_validation.run(
             explanation_result=stage5_result,
             provider=provider,
+            project=request.project,
         )
         _record_metrics(stage7_result.metrics)
     except Exception as exc:
@@ -365,7 +544,11 @@ async def run_learning_pipeline(
         stage7_result = _fallback_understanding_check_result(stage5_result)
         _record_metrics(stage7_result.metrics)
 
+    logger.info(f"stage 7 done in {time.perf_counter() - _t7:.1f}s")
+
     # ── Stage 8: Code Assistance Gate ─────────────────────────────────────────
+    logger.info("stage 8 start")
+    _t8 = time.perf_counter()
     await _report_stage(8, "Stage 8: Code Assistance Gate", 8 / 9)
     # Default is EXPLAIN; SNIPPET only if hint level / request allows
     wants_snippet = request.wants_snippet
@@ -386,7 +569,11 @@ async def run_learning_pipeline(
             )
         )
 
+    logger.info(f"stage 8 done in {time.perf_counter() - _t8:.1f}s")
+
     # ── Stage 9: Progress & Reflection (Optional) ─────────────────────────────
+    logger.info("stage 9 start")
+    _t9 = time.perf_counter()
     await _report_stage(9, "Stage 9: Progress & Reflection", 9 / 9)
     progress_record: ProgressRecord | None = None
     try:
@@ -402,6 +589,8 @@ async def run_learning_pipeline(
         progress_record = stage9_result.progress
     except Exception as exc:
         logger.warning("stage9_failed_degrading_gracefully", error=str(exc))
+
+    logger.info(f"stage 9 done in {time.perf_counter() - _t9:.1f}s")
 
     raw_questions = stage7_result.questions if stage7_result else []
 
@@ -439,11 +628,10 @@ async def run_learning_pipeline(
 
     if stage5_result.explanation:
         stage5_result.explanation.confidence_score = calibrated_conf
-        if is_shortage:
-            # Do not present uncited claims as grounded
-            for s in stage5_result.explanation.sections:
-                if not s.citations:
-                    s.support_status = "unsupported"
+        for s in stage5_result.explanation.sections:
+            s.content = strip_unbacked_marker(s.content)
+            if is_shortage and not s.citations:
+                s.support_status = "unsupported"
 
     warnings: list[ResponseWarning] = []
     if is_shortage:
@@ -465,6 +653,23 @@ async def run_learning_pipeline(
             )
         )
 
+    # ── Evidence Report Summary ───────────────────────────────────────────────
+    rejected_list: list[RejectedSource] = []
+    if evidence_result:
+        for r in evidence_result.rejected_resources:
+            if r.url:
+                rejected_list.append(
+                    RejectedSource(url=r.url, reason=r.rejection_reason or "rejected")
+                )
+
+    evidence_summary = EvidenceSummary(
+        discovered=total_discovered_count,
+        fetched=total_fetched_count,
+        accepted=len(reviewed_res),
+        rejected=rejected_list,
+        errors=all_discovery_errors,
+    )
+
     response = LearningResponse(
         learner_profile=stage1_result.profile,
         learning_plan=stage2_result.plan,
@@ -482,17 +687,20 @@ async def run_learning_pipeline(
         code_gate_decision=stage8_result.decision,
         progress=progress_record,
         confidence_score=calibrated_conf,
-        quality_score=0.92,
+        quality_score=0.0,
         evidence_status=evidence_status,
+        evidence_summary=evidence_summary,
         warnings=warnings,
         metrics=metrics,
     )
+    response.quality_score = compute_quality_score(response, evidence_status)
 
     # ── Response Validator & Repair ───────────────────────────────────────────
     report = validate_response(response)
     if not report.is_valid:
         repaired_resp, _ = repair_response(response, report)
         response = repaired_resp
+        response.quality_score = compute_quality_score(response, evidence_status)
 
     # ── Persist to SessionStore ───────────────────────────────────────────────
     store = session_store or get_session_store()

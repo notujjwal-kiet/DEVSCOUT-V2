@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     ollama_think: bool = Field(default=False)
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str | None = Field(default=None)
+    gemini_timeout: float = Field(default=60.0, ge=1.0)
     gemini_thinking_budget: int = Field(default=0, ge=0)
     model_pricing_per_1m: dict[str, dict[str, float]] = Field(
         default_factory=lambda: {
@@ -45,6 +46,17 @@ class Settings(BaseSettings):
             "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
             "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
             "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
+        }
+    )
+
+    # ── Seed Documentation Fallback ──────────────────────────────
+    seed_docs: dict[str, str] = Field(
+        default_factory=lambda: {
+            "fastapi": "https://fastapi.tiangolo.com/tutorial/",
+            "pydantic": "https://docs.pydantic.dev/latest/",
+            "python": "https://docs.python.org/3/tutorial/",
+            "react": "https://react.dev/learn",
+            "typescript": "https://www.typescriptlang.org/docs/",
         }
     )
 
@@ -159,4 +171,14 @@ def calculate_token_cost(
 
     cost = (p_tokens * input_rate + c_tokens * output_rate) / 1_000_000.0
     return round(cost, 6)
+
+
+SEED_DOCS: dict[str, str] = {
+    "fastapi": "https://fastapi.tiangolo.com/tutorial/",
+    "pydantic": "https://docs.pydantic.dev/latest/",
+    "python": "https://docs.python.org/3/tutorial/",
+    "react": "https://react.dev/learn",
+    "typescript": "https://www.typescriptlang.org/docs/",
+}
+
 

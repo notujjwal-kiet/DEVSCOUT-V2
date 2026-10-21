@@ -32,8 +32,9 @@ SYSTEM_PROMPT = (
     "Paraphrase concepts in your own pedagogical words; do not copy text verbatim. "
     "Every section must include quote-anchored citations: each citation carries resource_id and "
     "supporting_quote (a verbatim quote of at most 15 words from the cited source text). "
-    "If any statement or section is not supported by the excerpts, explicitly mark it with "
-    "'[Not backed by sources]' in the content and leave citations empty. Do not invent quotes or cite unverified sources."
+    "NEVER discuss missing sources or lack of excerpts inside summary or section content. "
+    "DO NOT include '[Not backed by sources]' in section content; support status is tracked externally. "
+    "Do not invent quotes or cite unverified sources."
 )
 
 
@@ -179,7 +180,9 @@ async def run(
         f"2. In explanation.sections, each citation in citations MUST carry resource_id (from the Available Verified Resources above) "
         f"and supporting_quote (a verbatim quote of max 15 words from the cited resource's text).\n"
         f"3. DO NOT cite phantom IDs, unverified sources, or invent quotes.\n"
-        f"4. If a section or claim is not backed by the excerpts, leave citations empty and clearly include '[Not backed by sources]' in the section content.\n"
+        f"4. If a section or claim is not backed by the excerpts, leave citations empty. "
+        f"DO NOT mention missing sources, lack of excerpts, or unverified documentation inside summary or section content. "
+        f"DO NOT include '[Not backed by sources]' in the content; the support_status field carries it.\n"
         f"5. Address every milestone/topic listed above across explanation.sections.\n"
         f"6. Provide concept_nodes and concept_edges representing the domain ontology.\n"
     )

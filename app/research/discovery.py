@@ -222,4 +222,11 @@ async def discover_sources(
     if active_cache is not None and discovered:
         await active_cache.set(cache_key, discovered)
 
+    logger.info(
+        "discover_sources_grounding",
+        query=query,
+        grounding_chunks_count=len(chunks) if chunks else 0,
+        resolved_urls=[s.url for s in discovered],
+    )
+
     return discovered

@@ -204,6 +204,7 @@ async def run(
     active_client = http_client if http_client is not None else httpx.AsyncClient(timeout=10.0)
 
     rate_limited_searches = 0
+    discovery_errors: list[str] = []
 
     try:
         # Initialize GitHubConnector if not provided
@@ -232,14 +233,20 @@ async def run(
                     ]
                 except RateLimitError as exc:
                     rate_limited_searches += 1
+                    err_msg = f"Rate limit during web discovery for query '{q}': {exc}"
+                    discovery_errors.append(err_msg)
                     logger.warning("stage3_discover_sources_rate_limited", query=q, error=str(exc))
                     return []
                 except Exception as exc:
                     exc_str = str(exc).lower()
                     if "429" in exc_str or "quota" in exc_str or "rate limit" in exc_str:
                         rate_limited_searches += 1
+                        err_msg = f"Rate limit during web discovery for query '{q}': {exc}"
+                        discovery_errors.append(err_msg)
                         logger.warning("stage3_discover_sources_rate_limited", query=q, error=str(exc))
                         return []
+                    err_msg = f"Error during web discovery for query '{q}': {exc}"
+                    discovery_errors.append(err_msg)
                     logger.warning("stage3_discover_sources_failed", query=q, error=str(exc))
                     return []
 
@@ -270,14 +277,20 @@ async def run(
                     ]
                 except RateLimitError as exc:
                     rate_limited_searches += 1
+                    err_msg = f"Rate limit during GitHub search for topic '{topic}': {exc}"
+                    discovery_errors.append(err_msg)
                     logger.warning("stage3_github_search_rate_limited", topic=topic, error=str(exc))
                     return []
                 except Exception as exc:
                     exc_str = str(exc).lower()
                     if "429" in exc_str or "rate limit" in exc_str:
                         rate_limited_searches += 1
+                        err_msg = f"Rate limit during GitHub search for topic '{topic}': {exc}"
+                        discovery_errors.append(err_msg)
                         logger.warning("stage3_github_search_rate_limited", topic=topic, error=str(exc))
                         return []
+                    err_msg = f"Error during GitHub search for topic '{topic}': {exc}"
+                    discovery_errors.append(err_msg)
                     logger.warning("stage3_github_search_failed", topic=topic, error=str(exc))
                     return []
 
@@ -354,6 +367,8 @@ async def run(
                     res.uncertainty_flag = False
                     return res
                 except Exception as exc:
+                    err_msg = f"Failed to fetch content from '{item.url}': {exc}"
+                    discovery_errors.append(err_msg)
                     logger.warning(
                         "stage3_fetch_failed_dropping_source",
                         url=item.url,
@@ -398,6 +413,9 @@ async def run(
     return SourceDiscoveryResult(
         goal_id=goal_id,
         resources=resources,
+        discovered_count=len(raw_candidates),
+        fetched_count=len(resources),
+        errors=discovery_errors,
         loop_count=loop_count,
         degraded=rate_limited_searches > 0,
         rate_limited_searches=rate_limited_searches,

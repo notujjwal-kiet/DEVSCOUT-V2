@@ -102,9 +102,9 @@ def setup_test_environment(monkeypatch):
                 reliability=1.0,
                 freshness_score=0.9,
                 retrieved_at=datetime.now(UTC),
-                excerpt="Tokens are added at a fixed replenishment rate up to bucket capacity.",
+                excerpt="Python tokens are added at a fixed replenishment rate up to bucket capacity.",
             ),
-            text="Tokens are added at a fixed replenishment rate up to bucket capacity.",
+            text="Python tokens are added at a fixed replenishment rate up to bucket capacity.",
         )
 
     async def fake_generate_structured(self, prompt, schema, system_prompt=None):
@@ -197,6 +197,7 @@ def setup_test_environment(monkeypatch):
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", fake_discover_sources)
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", fake_search_repositories)
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", fake_fetch_page)
+    monkeypatch.setattr("app.research.web_fetch.fetch_page", fake_fetch_page)
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_generate_structured)
 
 

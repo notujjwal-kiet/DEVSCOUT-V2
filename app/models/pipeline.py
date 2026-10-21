@@ -267,6 +267,7 @@ class Resource(BaseModel):
     popularity: int | None = None
     topic: str | None = None
     fetched_text: str = Field(default="", exclude=True)
+    origin: str = Field(default="discovered")
     is_rejected: bool = False
     rejection_reason: str | None = None
 
@@ -463,6 +464,19 @@ class ResponseWarning(BaseModel):
     message: str
 
 
+class RejectedSource(BaseModel):
+    url: str
+    reason: str
+
+
+class EvidenceSummary(BaseModel):
+    discovered: int = 0
+    fetched: int = 0
+    accepted: int = 0
+    rejected: list[RejectedSource] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class LearningResponse(BaseModel):
     """Complete response returned to developer after pipeline validation."""
 
@@ -484,6 +498,7 @@ class LearningResponse(BaseModel):
     confidence_score: float = Field(default=1.0, ge=0.0, le=1.0)
     quality_score: float = Field(default=1.0, ge=0.0, le=1.0)
     evidence_status: str = Field(default="sufficient")
+    evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
     warnings: list[ResponseWarning] = Field(default_factory=list)
     metrics: list[StageMetrics] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -606,6 +621,9 @@ class IntentPlanResult(BaseModel):
 class SourceDiscoveryResult(BaseModel):
     goal_id: str
     resources: list[Resource] = Field(default_factory=list)
+    discovered_count: int = 0
+    fetched_count: int = 0
+    errors: list[str] = Field(default_factory=list)
     loop_count: int = 0
     degraded: bool = False
     rate_limited_searches: int = 0

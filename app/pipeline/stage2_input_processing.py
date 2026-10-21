@@ -72,9 +72,13 @@ async def run(
         system_prompt=SYSTEM_PROMPT,
     )
 
+    import uuid
+
     # Re-enforce deterministic pipeline associations
     plan.goal_id = goal_context.goal.goal_id
     plan.depth_level = depth_level
+    plan.plan_id = str(uuid.uuid4())
+    plan.created_at = datetime.now(UTC)
 
     ended_at = datetime.now(UTC)
     metrics = StageMetrics(

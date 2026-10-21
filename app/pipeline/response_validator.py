@@ -32,6 +32,15 @@ from app.research.scoring import is_source_relevant_to_claim, normalize_whitespa
 FENCED_CODE_PATTERN = re.compile(r"```(?:\w+)?\s*\n?(.*?)```", re.DOTALL)
 NOT_BACKED_BY_SOURCES_MARKER = "[Not backed by sources]"
 
+
+def strip_unbacked_marker(text: str) -> str:
+    """Strip '[Not backed by sources]' from section content (support_status carries it)."""
+    if not text:
+        return text
+    cleaned = re.sub(r"\[not backed by sources\]", "", text, flags=re.IGNORECASE)
+    return " ".join(cleaned.split()).strip()
+
+
 # Substantive token extraction for deterministic support checks
 DEFAULT_STOP_WORDS: set[str] = {
     "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "of", "with",
@@ -273,6 +282,7 @@ def validate_explanation(
 
             # 1. Check if resource was rejected
             if getattr(res, "is_rejected", False):
+                citations_valid = False
                 issues.append(
                     f"Section '{section.title}' (index {idx}) cites rejected resource id '{matched_id}'."
                 )
@@ -285,24 +295,28 @@ def validate_explanation(
             if fetched_text or quote:
                 # Check relevance to claim for quote-anchored citations
                 if not is_source_relevant_to_claim(res, section.title, section.content):
+                    citations_valid = False
                     issues.append(
                         f"Section '{section.title}' (index {idx}) cites source '{res.title}' irrelevant to this claim."
                     )
                     continue
 
                 if not quote:
+                    citations_valid = False
                     issues.append(
                         f"Section '{section.title}' (index {idx}) citation to '{matched_id}' missing supporting quote."
                     )
                     continue
                 words = quote.split()
                 if len(words) > 15:
+                    citations_valid = False
                     issues.append(
                         f"Section '{section.title}' (index {idx}) supporting quote exceeds 15 words ({len(words)} words)."
                     )
                     continue
                 target_text = fetched_text or normalize_whitespace(res.excerpt or res.summary or "")
                 if quote.lower() not in target_text.lower():
+                    citations_valid = False
                     issues.append(
                         f"Section '{section.title}' (index {idx}) supporting quote '{quote}' not found verbatim in resource '{res.title}'."
                     )
@@ -324,19 +338,11 @@ def validate_explanation(
                     f"Section '{section.title}' (index {idx}) cites phantom / nonexistent resource id or url '{pc}'."
                 )
 
-        has_unbacked_marker = (
-            NOT_BACKED_BY_SOURCES_MARKER.lower() in section.content.lower()
-            or "not backed by sources" in section.content.lower()
-        )
+        section.content = strip_unbacked_marker(section.content)
 
         if not valid_cites:
             section.support_status = "unsupported"
             section.weakly_supported = False
-            if not has_unbacked_marker:
-                citations_valid = False
-                issues.append(
-                    f"Section '{section.title}' (index {idx}) has no citations and is not marked 'not backed by sources'."
-                )
         else:
             section.support_status = "supported"
 
@@ -433,14 +439,10 @@ def repair_explanation(
 
         sec["citation_resource_ids"] = valid_cites
 
-        # If no valid citations remain, mark as [Not backed by sources]
+        sec["content"] = strip_unbacked_marker(sec.get("content", ""))
         if not valid_cites:
-            content = sec.get("content", "")
-            if (
-                NOT_BACKED_BY_SOURCES_MARKER.lower() not in content.lower()
-                and "not backed by sources" not in content.lower()
-            ):
-                sec["content"] = f"{content.strip()} {NOT_BACKED_BY_SOURCES_MARKER}".strip()
+            sec["support_status"] = "unsupported"
+            sec["weakly_supported"] = False
 
     def _clamp(val: float | None) -> float:
         if val is None:
