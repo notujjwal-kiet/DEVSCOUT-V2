@@ -19,7 +19,7 @@ import pytest
 from google.genai import types
 
 from app.config import SEED_DOCS, get_settings
-from app.llm.provider import GeminiProvider, RateLimitError
+from app.llm.provider import GeminiProvider, LLMProviderError, RateLimitError
 from app.models.pipeline import (
     CodeGateDecision,
     CodeGateLevel,
@@ -348,18 +348,18 @@ async def test_gemini_provider_per_call_timeout_and_backoff():
         await p._execute_with_retry(slow_call)
     assert "timed out" in str(exc_info.value).lower()
 
-    # Test backoff retry on RateLimitError
+    # Test backoff retry on transient 5xx error
     attempts = 0
 
-    async def rate_limited_call():
+    async def server_error_call():
         nonlocal attempts
         attempts += 1
         if attempts < 2:
-            raise RateLimitError("429 Resource Exhausted")
+            raise LLMProviderError("503 Service Unavailable")
         return "success"
 
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-        res = await p._execute_with_retry(rate_limited_call, max_retries=2)
+        res = await p._execute_with_retry(server_error_call, max_retries=2)
         assert res == "success"
         assert attempts == 2
         assert mock_sleep.await_count == 1

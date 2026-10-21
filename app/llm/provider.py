@@ -428,6 +428,7 @@ class GeminiProvider:
         self,
         call_fn: Callable[[], object],
         max_5xx_retries: int = 3,
+        max_retries: int | None = None,
     ) -> object:
         """
         Execute an async Gemini API call.
@@ -435,6 +436,9 @@ class GeminiProvider:
         - Exponential backoff (max 3 tries) ONLY for transient 5xx.
         - One short retry honoring retry-after for 429 when retry-after is under 10s; otherwise fail immediately.
         """
+        if max_retries is not None:
+            max_5xx_retries = max_retries
+
         delay = 1.0
         retried_429 = False
         attempt_5xx = 0

@@ -71,7 +71,11 @@ async def test_stage3_query_generation_and_templates(monkeypatch):
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repos)
 
     plan_result = _make_plan_result(["Token Bucket", "Sliding Window"])
-    result = await stage3_research.run(plan_result)
+    result = await stage3_research.run(
+        plan_result,
+        enable_github_queries=True,
+        enable_community_queries=True,
+    )
 
     assert isinstance(result, SourceDiscoveryResult)
     assert result.goal_id == "goal-rate-limiter"
@@ -479,7 +483,12 @@ async def test_stage3_only_topics_filters_research(monkeypatch):
     plan_result = _make_plan_result(["Topic A", "Topic B", "Topic C"])
 
     # Pass only_topics=["Topic B"]
-    result = await stage3_research.run(plan_result, only_topics=["Topic B"])
+    result = await stage3_research.run(
+        plan_result,
+        only_topics=["Topic B"],
+        enable_github_queries=True,
+        enable_community_queries=True,
+    )
 
     assert isinstance(result, SourceDiscoveryResult)
     # Queries should ONLY be for Topic B (3 discovery queries, 1 github query)
@@ -545,7 +554,11 @@ async def test_stage3_max_searches_per_run_cap(monkeypatch):
 
     plan_result = _make_plan_result(["Topic A", "Topic B"])
     # 2 topics normally have 6 discovery + 2 github = 8 searches. With cap=3, only 3 run.
-    result = await stage3_research.run(plan_result)
+    result = await stage3_research.run(
+        plan_result,
+        enable_github_queries=True,
+        enable_community_queries=True,
+    )
 
     assert isinstance(result, SourceDiscoveryResult)
     assert discover_calls + github_calls == 3
@@ -566,7 +579,11 @@ async def test_stage3_rate_limited_searches_exposed_and_degraded(monkeypatch):
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_github)
 
     plan_result = _make_plan_result(["Topic A"])
-    result = await stage3_research.run(plan_result)
+    result = await stage3_research.run(
+        plan_result,
+        enable_github_queries=True,
+        enable_community_queries=True,
+    )
 
     assert isinstance(result, SourceDiscoveryResult)
     # 3 discovery searches failed with RateLimitError
