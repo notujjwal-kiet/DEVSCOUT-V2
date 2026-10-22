@@ -23,6 +23,7 @@
   }
   /*
   Example OpenAI-compatible providers (do not enable by default; fill in model and uncomment to use):
+  NOTE: base_url is operator-controlled config and must never come from a request.
   ,
   {
     "id": "groq",

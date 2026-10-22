@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     # ── Evidence / research ───────────────────────────────────────
     evidence_cache_ttl_seconds: int = Field(default=86400, ge=0)
     research_cache_file: str = Field(default="data/research_cache.json")
+    research_cache_dir: str = Field(default="data/research_cache")
     web_research_mode: Literal["live", "cached"] = "cached"
     github_token: str | None = Field(default=None)
 

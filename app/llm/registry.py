@@ -54,6 +54,7 @@ class ModelEntry(BaseModel):
     provider: Literal["gemini", "ollama", "openai_compatible"] = Field(..., description="Provider type")
     model: str = Field(..., description="Model name or environment variable template")
     local: bool = Field(default=False, description="Whether inference runs locally")
+    # base_url is operator-controlled config and must never come from a request.
     base_url: str | None = Field(default=None, description="Base URL for openai_compatible provider (https or localhost http)")
     api_key_env: str | None = Field(default=None, description="Environment variable name for the API key")
     supports_json_schema: bool = Field(default=False, description="Whether model supports structured JSON schema response_format")
@@ -87,6 +88,7 @@ class ModelEntry(BaseModel):
     @field_validator("base_url")
     @classmethod
     def _validate_base_url(cls, v: str | None) -> str | None:
+        # base_url is operator-controlled config and must never come from a request.
         if v is None:
             return None
         url = str(v).strip()

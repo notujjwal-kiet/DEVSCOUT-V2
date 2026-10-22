@@ -219,6 +219,7 @@ async def test_stage3_single_query_per_run_by_default(monkeypatch):
         return []
 
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", fake_discover)
+    monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", AsyncMock(return_value=[]))
 
     plan_result = IntentPlanResult(
         plan=LearningPlan(

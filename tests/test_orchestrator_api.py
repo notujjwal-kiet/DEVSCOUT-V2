@@ -197,6 +197,7 @@ def setup_test_environment(monkeypatch):
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", fake_discover_sources)
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", fake_search_repositories)
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", fake_fetch_page)
+    monkeypatch.setattr("app.pipeline.orchestrator.fetch_page", fake_fetch_page)
     monkeypatch.setattr("app.research.web_fetch.fetch_page", fake_fetch_page)
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", fake_generate_structured)
 
@@ -241,7 +242,7 @@ async def test_full_happy_path_post_api_learn():
             pdata = poll.json()
             if pdata["status"] == "completed":
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.005)
 
     assert pdata is not None and pdata["status"] == "completed"
     data = pdata["result"]
@@ -773,7 +774,7 @@ async def test_expected_points_leak_check():
             poll_resp = await client.get(f"/api/learn/{job_id}")
             if poll_resp.json()["status"] == "completed":
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.005)
 
     assert poll_resp is not None
     assert poll_resp.json()["status"] == "completed"
@@ -993,7 +994,7 @@ async def test_generic_500_message_on_internal_error(monkeypatch):
             poll1 = await client.get(f"/api/learn/{job_id}")
             if poll1.json()["status"] in ("failed", "completed"):
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.005)
 
     assert poll1 is not None
     pdata1 = poll1.json()

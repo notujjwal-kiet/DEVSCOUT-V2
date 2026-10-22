@@ -185,6 +185,8 @@ def mock_stage3_research_dependencies(monkeypatch):
     monkeypatch.setattr("app.pipeline.stage3_research.discover_sources", mock_discover_sources)
     monkeypatch.setattr("app.research.github.GitHubConnector.search_repositories", mock_search_repositories)
     monkeypatch.setattr("app.pipeline.stage3_research.fetch_page", mock_fetch_page)
+    monkeypatch.setattr("app.pipeline.orchestrator.fetch_page", mock_fetch_page)
+    monkeypatch.setattr("app.research.web_fetch.fetch_page", mock_fetch_page)
     monkeypatch.setattr("app.llm.provider.GeminiProvider.generate_structured", mock_generate_structured)
 
 
