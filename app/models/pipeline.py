@@ -128,7 +128,9 @@ class StageMetrics(BaseModel):
         elif hasattr(response_or_provider, "last_usage_data") and isinstance(
             getattr(response_or_provider, "last_usage_data", None), dict
         ):
-            ollama_data = getattr(response_or_provider, "last_usage_data")
+            d = getattr(response_or_provider, "last_usage_data")
+            if "prompt_eval_count" in d or "eval_count" in d:
+                ollama_data = d
 
         if ollama_data is not None:
             detected_ollama = True
@@ -168,12 +170,42 @@ class StageMetrics(BaseModel):
                 elif prompt_val is not None or cand_val is not None:
                     total_val = (prompt_val or 0) + (cand_val or 0)
 
+        # 3. Check for OpenAI-style usage fields directly on response/dict or provider
+        if prompt_val is None and cand_val is None:
+            openai_data = None
+            if isinstance(response_or_provider, dict):
+                if "prompt_tokens" in response_or_provider or "completion_tokens" in response_or_provider:
+                    openai_data = response_or_provider
+                elif "usage" in response_or_provider and isinstance(response_or_provider["usage"], dict):
+                    openai_data = response_or_provider["usage"]
+            elif hasattr(response_or_provider, "last_usage_data") and isinstance(
+                getattr(response_or_provider, "last_usage_data", None), dict
+            ):
+                d = getattr(response_or_provider, "last_usage_data")
+                if "prompt_tokens" in d or "completion_tokens" in d:
+                    openai_data = d
+                elif "usage" in d and isinstance(d["usage"], dict):
+                    openai_data = d["usage"]
+
+            if openai_data is not None:
+                p = openai_data.get("prompt_tokens")
+                c = openai_data.get("completion_tokens")
+                t = openai_data.get("total_tokens")
+                if p is not None:
+                    prompt_val = int(p)
+                if c is not None:
+                    cand_val = int(c)
+                if t is not None:
+                    total_val = int(t)
+                elif prompt_val is not None or cand_val is not None:
+                    total_val = (prompt_val or 0) + (cand_val or 0)
+
         # Assign tokens (remain None if not found)
         self.prompt_tokens = prompt_val
         self.completion_tokens = cand_val
         self.total_tokens = total_val
 
-        # 3. Model name resolution
+        # 4. Model name resolution
         resolved_model = model_name
         if resolved_model is None:
             resolved_model = getattr(response_or_provider, "model_name", None) or getattr(
@@ -186,7 +218,7 @@ class StageMetrics(BaseModel):
         if resolved_model and "ollama" in str(resolved_model).lower():
             detected_ollama = True
 
-        # 4. Compute cost
+        # 5. Compute cost
         if prompt_val is None and cand_val is None:
             self.cost_usd = 0.0 if detected_ollama else None
         else:
@@ -195,7 +227,9 @@ class StageMetrics(BaseModel):
                 prompt_tokens=self.prompt_tokens,
                 completion_tokens=self.completion_tokens,
                 is_ollama=detected_ollama,
+                model_id=self.model_id,
             )
+
 
 
 

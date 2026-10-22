@@ -143,25 +143,53 @@ def calculate_token_cost(
     prompt_tokens: int | None,
     completion_tokens: int | None,
     is_ollama: bool = False,
+    model_id: str | None = None,
 ) -> float | None:
     """
-    Calculate USD cost based on model pricing table per 1M tokens.
+    Calculate USD cost based on per-model registry pricing or config fallback table.
     Rules:
     - Local Ollama -> 0.0
-    - If model is in pricing table -> calculated cost
-    - Unknown model -> None (0.0 for Ollama)
+    - If model is in registry and has price_in_per_1m / price_out_per_1m -> calculated cost
+    - If model is in config pricing table -> calculated cost
+    - Unknown cost -> None
     """
     if is_ollama:
         return 0.0
-    if not model_name:
+    if not model_name and not model_id:
         return None
-    model_lower = str(model_name).strip().lower()
+    model_lower = str(model_name or "").strip().lower()
     if "ollama" in model_lower:
         return 0.0
 
     if prompt_tokens is None and completion_tokens is None:
         return None
 
+    p_tokens = prompt_tokens or 0
+    c_tokens = completion_tokens or 0
+
+    # 1. Check registry model entry pricing
+    try:
+        from app.llm.registry import get_model_registry
+
+        reg = get_model_registry()
+        entry = reg.get_model(model_id) if model_id else None
+        if entry is None and model_name:
+            for m in reg.list_models():
+                if m.model.lower() == model_lower or m.id.lower() == model_lower:
+                    entry = m
+                    break
+        if entry is not None:
+            if entry.local or entry.provider == "ollama":
+                return 0.0
+            if entry.price_in_per_1m is not None or entry.price_out_per_1m is not None:
+                in_rate = entry.price_in_per_1m or 0.0
+                out_rate = entry.price_out_per_1m or 0.0
+                cost = (p_tokens * in_rate + c_tokens * out_rate) / 1_000_000.0
+                return round(cost, 6)
+    except Exception:
+        pass
+
+    # 2. Check config table fallback
     pricing = get_settings().model_pricing_per_1m
     model_rates = None
     for k, v in pricing.items():
@@ -172,13 +200,12 @@ def calculate_token_cost(
     if model_rates is None:
         return None
 
-    p_tokens = prompt_tokens or 0
-    c_tokens = completion_tokens or 0
     input_rate = model_rates.get("input", 0.0)
     output_rate = model_rates.get("output", 0.0)
 
     cost = (p_tokens * input_rate + c_tokens * output_rate) / 1_000_000.0
     return round(cost, 6)
+
 
 
 SEED_DOCS: dict[str, str] = {

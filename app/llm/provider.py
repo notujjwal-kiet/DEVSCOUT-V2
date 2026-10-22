@@ -202,6 +202,262 @@ class OllamaProvider:
         return schema.model_validate_json(content)
 
 
+class OpenAICompatibleProvider:
+    """
+    OpenAI-compatible LLM provider using httpx async client.
+    Interacts with POST {base_url}/chat/completions using standard messages and temperature 0.2.
+    Supports JSON mode and structured output adhering to Pydantic schemas.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key_env: str | None = None,
+        model_name: str | None = None,
+        model_id: str = "openai-compatible",
+        supports_json_schema: bool = False,
+        timeout: float = 60.0,
+        client: httpx.AsyncClient | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        rate_gate: object | None = None,
+    ):
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key_env = api_key_env
+        self.model_name = model_name or "default"
+        self.model_id = model_id
+        self.supports_json_schema = supports_json_schema
+        self.timeout = float(timeout)
+        self.rate_gate = rate_gate
+
+        if client is not None:
+            self._client = client
+        elif transport is not None:
+            self._client = httpx.AsyncClient(transport=transport, timeout=self.timeout)
+        else:
+            self._client = None
+
+        self.last_response: dict[str, object] | None = None
+        self.last_usage_data: dict[str, object] | None = None
+
+    def _get_api_key(self) -> str | None:
+        """Read API key from os.environ[api_key_env] at call time. Never log or include in errors."""
+        if not self.api_key_env:
+            return None
+        key = os.environ.get(self.api_key_env, "").strip()
+        if not key:
+            raise LLMProviderError(
+                f"Authentication failed: environment variable '{self.api_key_env}' is not set."
+            )
+        return key
+
+    async def _post_chat(self, payload: dict[str, object]) -> dict[str, object]:
+        """POST {base_url}/chat/completions with rate gate acquire and error mapping."""
+        url = f"{self.base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        key = self._get_api_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        rate_gate = self.rate_gate
+        if rate_gate is None:
+            try:
+                from app.llm.rate_gate import get_rate_gate
+
+                rate_gate = get_rate_gate()
+            except Exception:
+                pass
+
+        max_retries = 2  # max 2 retries for transient 5xx errors (3 attempts total)
+        attempt = 0
+
+        while True:
+            attempt += 1
+            # Count every attempt against the model's sliding window RPM and daily budget
+            if rate_gate is not None and hasattr(rate_gate, "acquire"):
+                await rate_gate.acquire(self.model_id)
+
+            try:
+                if self._client is not None:
+                    response = await self._client.post(url, json=payload, headers=headers)
+                else:
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        response = await client.post(url, json=payload, headers=headers)
+            except httpx.RequestError as exc:
+                logger.error("openai_compatible_network_error", model_id=self.model_id, error=str(exc))
+                raise LLMProviderError(
+                    f"Network error connecting to OpenAI-compatible endpoint at '{self.base_url}': {exc}"
+                ) from exc
+
+            status = response.status_code
+            if 200 <= status < 300:
+                try:
+                    data = response.json()
+                except Exception as exc:
+                    raise LLMProviderError(
+                        f"Failed to parse JSON response from '{self.base_url}': {exc}"
+                    ) from exc
+
+                self.last_response = data
+                usage = data.get("usage")
+                if isinstance(usage, dict):
+                    self.last_usage_data = usage
+                return data
+
+            # 401 / 403 -> Authentication error (Never log or include key)
+            if status in (401, 403):
+                logger.warning(
+                    "openai_compatible_auth_failed",
+                    model_id=self.model_id,
+                    status_code=status,
+                )
+                raise LLMProviderError(
+                    f"Authentication failed (HTTP {status}) for model '{self.model_name}' on '{self.base_url}'."
+                )
+
+            # 429 -> RateLimitError (Not retried)
+            if status == 429:
+                logger.warning(
+                    "openai_compatible_rate_limit",
+                    model_id=self.model_id,
+                    status_code=status,
+                )
+                raise RateLimitError(
+                    f"Rate limit exceeded (HTTP 429) for model '{self.model_name}' on '{self.base_url}'."
+                )
+
+            # 5xx -> Transient (max 2 retries counted against model's daily budget)
+            if 500 <= status < 600:
+                if attempt <= max_retries:
+                    logger.warning(
+                        "openai_compatible_transient_5xx_retrying",
+                        model_id=self.model_id,
+                        status_code=status,
+                        attempt=attempt,
+                    )
+                    await asyncio.sleep(0.05 * (2 ** (attempt - 1)))
+                    continue
+                raise LLMProviderError(
+                    f"Model '{self.model_name}' server error (HTTP {status}) from '{self.base_url}'."
+                )
+
+            # Other 4xx
+            raise LLMProviderError(
+                f"Model '{self.model_name}' request failed with HTTP {status} from '{self.base_url}'."
+            )
+
+    async def generate(
+        self, prompt: str, system_prompt: str | None = None, **kwargs: object
+    ) -> str:
+        """Generate plain text using chat/completions endpoint."""
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload: dict[str, object] = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": 0.2,
+        }
+        data = await self._post_chat(payload)
+        choices = data.get("choices")
+        if not choices or not isinstance(choices, list):
+            raise LLMProviderError(f"No choices returned from '{self.base_url}'")
+        msg = choices[0].get("message", {})
+        return str(msg.get("content", ""))
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema: type[T],
+        system_prompt: str | None = None,
+        **kwargs: object,
+    ) -> T:
+        """
+        Generate structured output adhering to schema.
+        If supports_json_schema: sends response_format with json_schema.
+        Otherwise: sends JSON mode with schema instruction and validates;
+        validation errors go through the retry/repair reflection flow.
+        """
+        import json as _json
+
+        schema_json = schema.model_json_schema()
+        messages: list[dict[str, str]] = []
+
+        if self.supports_json_schema:
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            payload: dict[str, object] = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": 0.2,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": schema_json,
+                        "strict": True,
+                    },
+                },
+            }
+        else:
+            json_instruction = (
+                f"Reply with valid JSON only adhering strictly to this schema: {_json.dumps(schema_json)}"
+            )
+            combined_sys = f"{system_prompt}\n\n{json_instruction}" if system_prompt else json_instruction
+            messages.append({"role": "system", "content": combined_sys})
+            messages.append({"role": "user", "content": prompt})
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            }
+
+        data = await self._post_chat(payload)
+        choices = data.get("choices", [])
+        if not choices or not isinstance(choices, list):
+            raise LLMProviderError(f"No choices returned from '{self.base_url}'")
+        content = str(choices[0].get("message", {}).get("content", ""))
+
+        try:
+            return schema.model_validate_json(content)
+        except Exception as first_exc:
+            logger.warning(
+                "openai_compatible_structured_validation_failed_repairing",
+                model_id=self.model_id,
+                schema=schema.__name__,
+                error=str(first_exc),
+            )
+            repair_messages = list(messages)
+            repair_messages.append({"role": "assistant", "content": content})
+            repair_messages.append({
+                "role": "user",
+                "content": (
+                    f"IMPORTANT: Your previous output failed schema validation with error:\n"
+                    f"{first_exc}\n"
+                    f"Please correct the error and reply with valid JSON only matching the schema."
+                ),
+            })
+            repair_payload = dict(payload)
+            repair_payload["messages"] = repair_messages
+            repair_data = await self._post_chat(repair_payload)
+            repair_choices = repair_data.get("choices", [])
+            if not repair_choices:
+                raise LLMProviderError(
+                    f"No choices returned during structured repair from '{self.base_url}'"
+                )
+            repaired_content = str(repair_choices[0].get("message", {}).get("content", ""))
+            try:
+                return schema.model_validate_json(repaired_content)
+            except Exception as repair_exc:
+                raise LLMProviderError(
+                    f"Schema validation failed after repair for {schema.__name__}: {repair_exc}"
+                ) from repair_exc
+
+
+
 def _map_gemini_error(exc: Exception, model_name: str) -> LLMProviderError:
     """Map Gemini SDK and HTTP/transport errors to a readable LLMProviderError."""
     if isinstance(exc, LLMProviderError):
@@ -617,13 +873,28 @@ def get_llm_provider(
         or (cfg.llm_provider if cfg else "ollama")
     ).lower().strip()
 
+    base_url = kwargs.pop("base_url", None)
+    api_key_env = kwargs.pop("api_key_env", None)
+    supports_json_schema = bool(kwargs.pop("supports_json_schema", False))
+
     if chosen == "gemini":
         mid = model_id or "gemini-main"
         return GeminiProvider(model_name=model_name, model_id=mid, **kwargs)
     elif chosen == "ollama":
         mid = model_id or "ollama-local"
         return OllamaProvider(model_name=model_name, model_id=mid, **kwargs)
+    elif chosen == "openai_compatible":
+        mid = model_id or "openai-compatible"
+        return OpenAICompatibleProvider(
+            base_url=str(base_url or ""),
+            api_key_env=api_key_env,
+            model_name=model_name,
+            model_id=mid,
+            supports_json_schema=supports_json_schema,
+            **kwargs,
+        )
     else:
         raise ValueError(
-            f"Unsupported LLM_PROVIDER '{chosen}'. Supported options are 'ollama' and 'gemini'."
+            f"Unsupported LLM_PROVIDER '{chosen}'. Supported options are 'gemini', 'ollama', and 'openai_compatible'."
         )
+

@@ -1,0 +1,88 @@
+[
+  {
+    "id": "gemini-main",
+    "label": "Gemini Main",
+    "provider": "gemini",
+    "model": "${GEMINI_MODEL}",
+    "local": false,
+    "rpm": 5,
+    "rpd": 20,
+    "tier": "stable",
+    "priority": 1
+  },
+  {
+    "id": "ollama-local",
+    "label": "Ollama Local",
+    "provider": "ollama",
+    "model": "${OLLAMA_MODEL}",
+    "local": true,
+    "rpm": null,
+    "rpd": null,
+    "tier": "stable",
+    "priority": 9
+  }
+  /*
+  Example OpenAI-compatible providers (do not enable by default; fill in model and uncomment to use):
+  ,
+  {
+    "id": "groq",
+    "label": "Groq",
+    "provider": "openai_compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY",
+    "model": "",
+    "supports_json_schema": true,
+    "rpm": 30,
+    "rpd": 1000,
+    "price_in_per_1m": null,
+    "price_out_per_1m": null,
+    "tier": "stable",
+    "priority": 2
+  },
+  {
+    "id": "openrouter",
+    "label": "OpenRouter",
+    "provider": "openai_compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "model": "",
+    "supports_json_schema": false,
+    "rpm": 20,
+    "rpd": 500,
+    "price_in_per_1m": null,
+    "price_out_per_1m": null,
+    "tier": "stable",
+    "priority": 3
+  },
+  {
+    "id": "mistral",
+    "label": "Mistral",
+    "provider": "openai_compatible",
+    "base_url": "https://api.mistral.ai/v1",
+    "api_key_env": "MISTRAL_API_KEY",
+    "model": "",
+    "supports_json_schema": true,
+    "rpm": 20,
+    "rpd": 500,
+    "price_in_per_1m": null,
+    "price_out_per_1m": null,
+    "tier": "stable",
+    "priority": 4
+  },
+  {
+    "id": "cerebras",
+    "label": "Cerebras",
+    "provider": "openai_compatible",
+    "base_url": "https://api.cerebras.ai/v1",
+    "api_key_env": "CEREBRAS_API_KEY",
+    "model": "",
+    "supports_json_schema": false,
+    "rpm": 30,
+    "rpd": 1000,
+    "price_in_per_1m": null,
+    "price_out_per_1m": null,
+    "tier": "stable",
+    "priority": 5
+  }
+  */
+]

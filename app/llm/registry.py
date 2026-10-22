@@ -51,11 +51,16 @@ class ModelEntry(BaseModel):
 
     id: str = Field(..., description="Unique model identifier")
     label: str = Field(..., description="Human-readable label")
-    provider: Literal["gemini", "ollama"] = Field(..., description="Provider type")
+    provider: Literal["gemini", "ollama", "openai_compatible"] = Field(..., description="Provider type")
     model: str = Field(..., description="Model name or environment variable template")
     local: bool = Field(default=False, description="Whether inference runs locally")
+    base_url: str | None = Field(default=None, description="Base URL for openai_compatible provider (https or localhost http)")
+    api_key_env: str | None = Field(default=None, description="Environment variable name for the API key")
+    supports_json_schema: bool = Field(default=False, description="Whether model supports structured JSON schema response_format")
     rpm: int | None = Field(default=None, description="Requests per minute limit")
     rpd: int | None = Field(default=None, description="Requests per day limit")
+    price_in_per_1m: float | None = Field(default=None, description="Input price per 1M tokens in USD")
+    price_out_per_1m: float | None = Field(default=None, description="Output price per 1M tokens in USD")
     tier: Literal["stable", "experimental"] = Field(default="stable", description="Release tier")
     priority: int = Field(default=1, description="Selection priority (lowest number chosen first)")
 
@@ -63,9 +68,9 @@ class ModelEntry(BaseModel):
     @classmethod
     def _validate_provider(cls, v: object) -> str:
         s = str(v).lower().strip()
-        if s not in ("gemini", "ollama"):
+        if s not in ("gemini", "ollama", "openai_compatible"):
             raise ValueError(
-                f"Unknown/unsupported provider '{v}'. Supported providers are 'gemini' and 'ollama'."
+                f"Unknown/unsupported provider '{v}'. Supported providers are 'gemini', 'ollama', and 'openai_compatible'."
             )
         return s
 
@@ -79,9 +84,37 @@ class ModelEntry(BaseModel):
             )
         return s
 
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        url = str(v).strip()
+        if not url:
+            return None
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        hostname = (parsed.hostname or "").lower()
+
+        if scheme == "http":
+            if hostname not in ("localhost", "127.0.0.1", "::1"):
+                raise ValueError(
+                    f"base_url '{url}' must use HTTPS. HTTP is only allowed for localhost entries."
+                )
+        elif scheme != "https":
+            raise ValueError(
+                f"base_url '{url}' has invalid scheme '{scheme}'. Only HTTPS (and HTTP for localhost) are allowed."
+            )
+        return url
+
     @model_validator(mode="after")
-    def _resolve_model(self) -> ModelEntry:
+    def _validate_entry(self) -> ModelEntry:
         self.model = resolve_model_name(self.model, self.provider)
+        if self.provider == "openai_compatible":
+            if not self.base_url:
+                raise ValueError("`base_url` is required for provider 'openai_compatible'.")
         return self
 
 
@@ -130,7 +163,12 @@ def load_model_registry(file_path: str = MODELS_FILE_DEFAULT) -> ModelRegistry:
             raise FileNotFoundError(f"Model registry file '{file_path}' not found.")
 
     with open(file_path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+        content = f.read()
+
+    # Strip C-style /* ... */ and // comments for example/annotated JSON files
+    clean_json = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+    clean_json = re.sub(r"//.*$", "", clean_json, flags=re.MULTILINE)
+    raw = json.loads(clean_json)
 
     entries_raw = raw if isinstance(raw, list) else raw.get("models", list(raw.values()))
     models: list[ModelEntry] = []
@@ -148,6 +186,37 @@ def load_model_registry(file_path: str = MODELS_FILE_DEFAULT) -> ModelRegistry:
     return _registry
 
 
+def is_model_available(entry: ModelEntry) -> bool:
+    """
+    Check if a model is currently available:
+    - openai_compatible: requires api_key_env to be set in os.environ (or local Ollama entry) AND has budget.
+    - gemini: requires GEMINI_API_KEY (if remote) AND has budget.
+    - ollama: local models are available if server responds/configured.
+    """
+    from app.llm.rate_gate import get_rate_gate
+
+    gate = get_rate_gate()
+    if not gate.has_budget(entry.id):
+        return False
+
+    if entry.provider == "openai_compatible":
+        if entry.local:
+            return True
+        if not entry.api_key_env:
+            return False
+        return bool(os.getenv(entry.api_key_env, "").strip())
+
+    if entry.provider == "gemini":
+        if not entry.local:
+            return bool(os.getenv("GEMINI_API_KEY", "").strip())
+        return True
+
+    if entry.provider == "ollama":
+        return True
+
+    return False
+
+
 def get_model_registry() -> ModelRegistry:
     """Return singleton ModelRegistry instance, loading models.json if needed."""
     global _registry
@@ -160,3 +229,4 @@ def set_model_registry(registry: ModelRegistry | None) -> None:
     """Override singleton ModelRegistry (used in unit tests)."""
     global _registry
     _registry = registry
+

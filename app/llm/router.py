@@ -17,7 +17,7 @@ import structlog
 
 from app.llm.provider import LLMProvider, RateLimitError, LLMProviderError, get_llm_provider, GeminiProvider
 from app.llm.rate_gate import get_rate_gate
-from app.llm.registry import ModelEntry, get_model_registry
+from app.llm.registry import ModelEntry, get_model_registry, is_model_available
 
 logger = structlog.get_logger(__name__)
 
@@ -79,6 +79,9 @@ class RoutedProvider:
             provider_name=entry.provider,
             model_name=entry.model,
             model_id=entry.id,
+            base_url=entry.base_url,
+            api_key_env=entry.api_key_env,
+            supports_json_schema=entry.supports_json_schema,
             rate_gate=get_rate_gate(),
         )
         p.model_id = entry.id  # type: ignore[attr-defined]
@@ -259,19 +262,23 @@ async def get_provider_for(
     models = reg.list_models()  # sorted by priority ascending
     first_choice_model_id = models[0].id if models else None
 
-    # Filter to models that have budget left (local models always have budget)
-    available_models = [m for m in models if rate_gate.has_budget(m.id)]
+    # Filter to models that are available (have budget and valid credentials)
+    available_models = [m for m in models if is_model_available(m)]
 
     if not available_models:
-        # If remote models exhausted, fallback to first local/ollama model
+        # If remote models exhausted/unavailable, fallback to first local/ollama model
         local_models = [m for m in models if m.local or m.provider == "ollama"]
         primary_entry = local_models[0] if local_models else models[0]
         fallback_entry = None
     else:
         primary_entry = available_models[0]
-        # Next candidate model by priority
-        remaining = [m for m in models if m.id != primary_entry.id]
-        fallback_entry = remaining[0] if remaining else None
+        # Next candidate model by priority from available models (or local fallback)
+        remaining = [m for m in available_models if m.id != primary_entry.id]
+        if not remaining:
+            local_models = [m for m in models if (m.local or m.provider == "ollama") and m.id != primary_entry.id]
+            fallback_entry = local_models[0] if local_models else None
+        else:
+            fallback_entry = remaining[0]
 
     return RoutedProvider(
         primary_entry=primary_entry,
