@@ -30,13 +30,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ── LLM Provider ──────────────────────────────────────────────
-    llm_provider: str = Field(default="ollama")
-    ollama_host: str = Field(default="http://localhost:11434")
-    ollama_model: str = Field(default="llama3.2")
-    ollama_timeout: int = Field(default=120, ge=10)
-    ollama_think: bool = Field(default=False)
+    llm_provider: str = Field(default="gemini")
     gemini_api_key: str | None = Field(default=None)
-    gemini_model: str | None = Field(default=None)
+    gemini_model: str = Field(default="gemini-2.5-flash")
     gemini_timeout_seconds: float = Field(default=60.0, ge=1.0)
     gemini_timeout: float = Field(default=60.0, ge=1.0)
     gemini_rpm: int = Field(default=4, ge=1)
@@ -143,24 +139,22 @@ def calculate_token_cost(
     model_name: str | None,
     prompt_tokens: int | None,
     completion_tokens: int | None,
-    is_ollama: bool = False,
+    is_local: bool = False,
     model_id: str | None = None,
 ) -> float | None:
     """
     Calculate USD cost based on per-model registry pricing or config fallback table.
     Rules:
-    - Local Ollama -> 0.0
+    - Local models -> 0.0
     - If model is in registry and has price_in_per_1m / price_out_per_1m -> calculated cost
     - If model is in config pricing table -> calculated cost
     - Unknown cost -> None
     """
-    if is_ollama:
+    if is_local:
         return 0.0
     if not model_name and not model_id:
         return None
     model_lower = str(model_name or "").strip().lower()
-    if "ollama" in model_lower:
-        return 0.0
 
     if prompt_tokens is None and completion_tokens is None:
         return None
@@ -180,7 +174,7 @@ def calculate_token_cost(
                     entry = m
                     break
         if entry is not None:
-            if entry.local or entry.provider == "ollama":
+            if entry.local:
                 return 0.0
             if entry.price_in_per_1m is not None or entry.price_out_per_1m is not None:
                 in_rate = entry.price_in_per_1m or 0.0

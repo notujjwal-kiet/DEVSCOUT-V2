@@ -6,7 +6,7 @@ Unit tests for model registry, per-model limiter, router, /api/models, and trans
 2. Unknown provider fails startup / validation with a clear message.
 3. Auto mode skips an exhausted model and chooses the next available model.
 4. Quota error moves to the next model exactly once (failover).
-5. Local fallback works with fake Ollama.
+5. Local/secondary fallback works with secondary provider/model.
 6. GET /api/models shows used_today and limit_today per model.
 7. No secrets in any API response (/api/models, /api/learn).
 """
@@ -110,20 +110,26 @@ def test_unknown_provider_fails_validation_with_clear_message(tmp_path):
         load_model_registry(str(bad_file))
     
     assert "unsupported-provider-ai" in str(exc_info.value)
-    assert "gemini" in str(exc_info.value) and "ollama" in str(exc_info.value)
+    assert "gemini" in str(exc_info.value)
 
 
 # ── Test 3: Auto mode skips exhausted model ───────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_auto_mode_skips_exhausted_model(clean_rate_gate):
+async def test_auto_mode_skips_exhausted_model(clean_rate_gate, monkeypatch):
     """
     When gemini-main daily budget is exhausted (20/20 calls used):
-    - Auto mode chooses ollama-local (next lowest priority model with budget).
-    - Provider is routed to ollama-local.
+    - Auto mode chooses the next available model in registry.
     """
+    from app.llm.registry import ModelRegistry, set_model_registry
+
+    # Register two models
+    m1 = ModelEntry(id="gemini-main", label="Gemini Main", provider="gemini", model="gemini-2.5-flash", priority=1, rpm=4, rpd=18)
+    m2 = ModelEntry(id="gemini-backup", label="Gemini Backup", provider="gemini", model="gemini-2.0-flash", priority=2, rpm=4, rpd=18)
+    set_model_registry(ModelRegistry([m1, m2]))
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
     gate = clean_rate_gate
-    # Simulate 20 requests used today for gemini-main
     today_str = gate._get_today_str()
     with open(gate.quota_file, "w", encoding="utf-8") as f:
         json.dump(
@@ -137,13 +143,11 @@ async def test_auto_mode_skips_exhausted_model(clean_rate_gate):
         )
 
     assert not gate.has_budget("gemini-main")
-    assert gate.has_budget("ollama-local")
+    assert gate.has_budget("gemini-backup")
 
     routed = await get_provider_for(stage=2, requested_id=None)
     assert isinstance(routed, RoutedProvider)
-    # The active/primary entry selected should be ollama-local
-    assert routed.active_entry.id == "ollama-local"
-    assert routed.active_entry.provider == "ollama"
+    assert routed.active_entry.id == "gemini-backup"
 
 
 # ── Test 4: Quota error moves to next model exactly once ──────────────────────
@@ -164,12 +168,11 @@ async def test_quota_error_moves_to_next_model_once():
         priority=1,
     )
     fallback_entry = ModelEntry(
-        id="ollama-local",
-        label="Ollama Local",
-        provider="ollama",
-        model="llama3",
-        local=True,
-        priority=9,
+        id="gemini-backup",
+        label="Gemini Backup",
+        provider="gemini",
+        model="gemini-2.0-flash",
+        priority=2,
     )
 
     mock_primary = MagicMock()
@@ -179,7 +182,7 @@ async def test_quota_error_moves_to_next_model_once():
     )
 
     mock_fallback = MagicMock()
-    mock_fallback.model_id = "ollama-local"
+    mock_fallback.model_id = "gemini-backup"
     mock_fallback.generate = AsyncMock(return_value="Output from fallback model")
 
     routed = RoutedProvider(
@@ -198,11 +201,11 @@ async def test_quota_error_moves_to_next_model_once():
     assert mock_fallback.generate.call_count == 1
     assert result == "Output from fallback model"
     assert routed.was_fallback is True
-    assert routed.model_id == "ollama-local"
+    assert routed.model_id == "gemini-backup"
 
     # Test that if fallback also fails, it does NOT retry again
     mock_fallback_failing = MagicMock()
-    mock_fallback_failing.model_id = "ollama-local"
+    mock_fallback_failing.model_id = "gemini-backup"
     mock_fallback_failing.generate = AsyncMock(
         side_effect=RateLimitError("Fallback also quota exhausted")
     )
@@ -222,20 +225,25 @@ async def test_quota_error_moves_to_next_model_once():
     assert mock_fallback_failing.generate.call_count == 1
 
 
-# ── Test 5: Local fallback works with fake Ollama ─────────────────────────────
+# ── Test 5: Fallback routing works when primary quota is exhausted ───────────
 
 @pytest.mark.asyncio
-async def test_local_fallback_with_fake_ollama(clean_rate_gate, monkeypatch):
+async def test_fallback_routing_on_quota_error(clean_rate_gate, monkeypatch):
     """
-    Explicit requested_id with LLM_FALLBACK=ollama:
+    Explicit requested_id with LLM_FALLBACK configured:
     - Primary gemini-main fails with quota error.
-    - Fallback routes to ollama-local and completes.
+    - Fallback routes to gemini-backup and completes.
     """
-    monkeypatch.setenv("LLM_FALLBACK", "ollama")
+    from app.llm.registry import ModelRegistry, set_model_registry
+
+    m1 = ModelEntry(id="gemini-main", label="Gemini Main", provider="gemini", model="gemini-2.5-flash", priority=1)
+    m2 = ModelEntry(id="gemini-backup", label="Gemini Backup", provider="gemini", model="gemini-2.0-flash", priority=2)
+    set_model_registry(ModelRegistry([m1, m2]))
+    monkeypatch.setenv("LLM_FALLBACK", "gemini-backup")
 
     routed = await get_provider_for(stage=2, requested_id="gemini-main")
     assert routed.fallback_entry is not None
-    assert routed.fallback_entry.id == "ollama-local"
+    assert routed.fallback_entry.id == "gemini-backup"
 
     # Mock primary to fail with quota error
     mock_gemini = MagicMock()
@@ -244,16 +252,16 @@ async def test_local_fallback_with_fake_ollama(clean_rate_gate, monkeypatch):
         side_effect=RateLimitError("Gemini daily budget reached")
     )
 
-    # Fake Ollama provider
-    mock_ollama = MagicMock()
-    mock_ollama.model_id = "ollama-local"
-    mock_ollama.generate = AsyncMock(return_value="Local Ollama generated text")
+    # Fake fallback provider
+    mock_fallback = MagicMock()
+    mock_fallback.model_id = "gemini-backup"
+    mock_fallback.generate = AsyncMock(return_value="Fallback generated text")
 
     routed._primary_instance = mock_gemini
-    routed._fallback_instance = mock_ollama
+    routed._fallback_instance = mock_fallback
 
     output = await routed.generate("Summarize topic")
-    assert output == "Local Ollama generated text"
+    assert output == "Fallback generated text"
     assert routed.was_fallback is True
 
 
@@ -284,7 +292,7 @@ def test_api_models_endpoint(clean_rate_gate):
     assert resp.status_code == 200
     models = resp.json()
     assert isinstance(models, list)
-    assert len(models) >= 2
+    assert len(models) >= 1
 
     gemini_entry = next((m for m in models if m["id"] == "gemini-main"), None)
     assert gemini_entry is not None
@@ -293,13 +301,6 @@ def test_api_models_endpoint(clean_rate_gate):
     assert gemini_entry["used_today"] == 3
     assert gemini_entry["limit_today"] == 20
     assert gemini_entry["available"] is True
-
-    ollama_entry = next((m for m in models if m["id"] == "ollama-local"), None)
-    assert ollama_entry is not None
-    assert ollama_entry["provider"] == "ollama"
-    assert ollama_entry["local"] is True
-    assert ollama_entry["limit_today"] is None
-    assert ollama_entry["available"] is True
 
 
 # ── Test 7: No secrets in any response ────────────────────────────────────────
@@ -342,13 +343,13 @@ async def test_transparency_models_used_and_fallback_warning():
     """
     metrics = [
         StageMetrics(stage_id=1, stage_name="Developer Input"),
-        StageMetrics(stage_id=2, stage_name="Intent Plan", model_id="ollama-local"),
-        StageMetrics(stage_id=5, stage_name="AI Analysis", model_id="ollama-local"),
+        StageMetrics(stage_id=2, stage_name="Intent Plan", model_id="gemini-backup"),
+        StageMetrics(stage_id=5, stage_name="AI Analysis", model_id="gemini-backup"),
     ]
 
     # Run response construction check
     models_used = list(dict.fromkeys(m.model_id for m in metrics if m.model_id))
-    assert models_used == ["ollama-local"]
+    assert models_used == ["gemini-backup"]
 
     first_choice_model_id = "gemini-main"
     fallback_model_used = any(

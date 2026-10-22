@@ -98,14 +98,14 @@ class StageMetrics(BaseModel):
         self,
         response_or_provider: object,
         model_name: str | None = None,
-        is_ollama: bool = False,
+        is_local: bool = False,
     ) -> None:
         """
         Fill token counts and cost from provider response or provider state:
         - Gemini: usage_metadata (prompt_token_count, candidates_token_count, total_token_count)
-        - Ollama: prompt_eval_count, eval_count
+        - OpenAI-compatible: usage (prompt_tokens, completion_tokens, total_tokens)
         - If no usage: prompt_tokens, completion_tokens, total_tokens remain None (not 0)
-        - Cost: computed from config price table; 0.0 for Ollama, None for unknown models.
+        - Cost: computed from config price table; 0.0 for local models, None for unknown models.
         """
         from app.config import calculate_token_cost, get_settings
 
@@ -117,60 +117,34 @@ class StageMetrics(BaseModel):
         prompt_val: int | None = None
         cand_val: int | None = None
         total_val: int | None = None
-        detected_ollama = is_ollama
 
-        # 1. Check for Ollama-style usage fields directly on response/dict or provider
-        ollama_data = None
-        if isinstance(response_or_provider, dict) and (
-            "prompt_eval_count" in response_or_provider or "eval_count" in response_or_provider
-        ):
-            ollama_data = response_or_provider
-        elif hasattr(response_or_provider, "last_usage_data") and isinstance(
-            getattr(response_or_provider, "last_usage_data", None), dict
-        ):
-            d = getattr(response_or_provider, "last_usage_data")
-            if "prompt_eval_count" in d or "eval_count" in d:
-                ollama_data = d
+        # 1. Check for Gemini-style usage_metadata
+        usage = getattr(response_or_provider, "last_usage_metadata", None)
+        if usage is None:
+            usage = getattr(response_or_provider, "usage_metadata", None)
+        if usage is None and isinstance(response_or_provider, dict):
+            usage = response_or_provider.get("usage_metadata")
 
-        if ollama_data is not None:
-            detected_ollama = True
-            p = ollama_data.get("prompt_eval_count")
-            c = ollama_data.get("eval_count")
+        if usage is not None:
+            if isinstance(usage, dict):
+                p = usage.get("prompt_token_count")
+                c = usage.get("candidates_token_count")
+                t = usage.get("total_token_count")
+            else:
+                p = getattr(usage, "prompt_token_count", None)
+                c = getattr(usage, "candidates_token_count", None)
+                t = getattr(usage, "total_token_count", None)
+
             if p is not None:
                 prompt_val = int(p)
             if c is not None:
                 cand_val = int(c)
-            if prompt_val is not None or cand_val is not None:
+            if t is not None:
+                total_val = int(t)
+            elif prompt_val is not None or cand_val is not None:
                 total_val = (prompt_val or 0) + (cand_val or 0)
 
-        # 2. Check for Gemini-style usage_metadata
-        if prompt_val is None and cand_val is None:
-            usage = getattr(response_or_provider, "last_usage_metadata", None)
-            if usage is None:
-                usage = getattr(response_or_provider, "usage_metadata", None)
-            if usage is None and isinstance(response_or_provider, dict):
-                usage = response_or_provider.get("usage_metadata")
-
-            if usage is not None:
-                if isinstance(usage, dict):
-                    p = usage.get("prompt_token_count")
-                    c = usage.get("candidates_token_count")
-                    t = usage.get("total_token_count")
-                else:
-                    p = getattr(usage, "prompt_token_count", None)
-                    c = getattr(usage, "candidates_token_count", None)
-                    t = getattr(usage, "total_token_count", None)
-
-                if p is not None:
-                    prompt_val = int(p)
-                if c is not None:
-                    cand_val = int(c)
-                if t is not None:
-                    total_val = int(t)
-                elif prompt_val is not None or cand_val is not None:
-                    total_val = (prompt_val or 0) + (cand_val or 0)
-
-        # 3. Check for OpenAI-style usage fields directly on response/dict or provider
+        # 2. Check for OpenAI-style usage fields directly on response/dict or provider
         if prompt_val is None and cand_val is None:
             openai_data = None
             if isinstance(response_or_provider, dict):
@@ -205,28 +179,25 @@ class StageMetrics(BaseModel):
         self.completion_tokens = cand_val
         self.total_tokens = total_val
 
-        # 4. Model name resolution
+        # 3. Model name resolution
         resolved_model = model_name
         if resolved_model is None:
             resolved_model = getattr(response_or_provider, "model_name", None) or getattr(
                 response_or_provider, "model", None
             )
-        if resolved_model is None and not detected_ollama:
+        if resolved_model is None and not is_local:
             cfg = get_settings()
             resolved_model = cfg.gemini_model or "gemini-2.5-flash"
 
-        if resolved_model and "ollama" in str(resolved_model).lower():
-            detected_ollama = True
-
-        # 5. Compute cost
+        # 4. Compute cost
         if prompt_val is None and cand_val is None:
-            self.cost_usd = 0.0 if detected_ollama else None
+            self.cost_usd = 0.0 if is_local else None
         else:
             self.cost_usd = calculate_token_cost(
                 model_name=resolved_model,
                 prompt_tokens=self.prompt_tokens,
                 completion_tokens=self.completion_tokens,
-                is_ollama=detected_ollama,
+                is_local=is_local,
                 model_id=self.model_id,
             )
 

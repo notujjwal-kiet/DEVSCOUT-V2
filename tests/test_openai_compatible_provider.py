@@ -97,14 +97,14 @@ def test_bad_base_url_rejected_at_startup(tmp_path):
     # 4. HTTP allowed for localhost and 127.0.0.1
     local_entry = ModelEntry(
         id="local-openai",
-        label="Local Ollama OpenAI Compat",
+        label="Local OpenAI Compat",
         provider="openai_compatible",
-        base_url="http://localhost:11434/v1",
+        base_url="http://localhost:8000/v1",
         api_key_env=None,
         model="llama3.2",
         local=True,
     )
-    assert local_entry.base_url == "http://localhost:11434/v1"
+    assert local_entry.base_url == "http://localhost:8000/v1"
 
     local_ip_entry = ModelEntry(
         id="local-ip-openai",

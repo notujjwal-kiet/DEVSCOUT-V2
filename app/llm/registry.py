@@ -4,7 +4,7 @@ app/llm/registry.py
 Model registry loaded from models.json at repo root:
 - Validated with Pydantic.
 - Unknown providers fail startup with a clear message.
-- Model names resolve environment variables (${GEMINI_MODEL}, ${OLLAMA_MODEL}) dynamically.
+- Model names resolve environment variables (${GEMINI_MODEL}) dynamically.
 - No secrets stored.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ MODELS_FILE_DEFAULT = "models.json"
 def resolve_model_name(val: str, provider: str) -> str:
     """Resolve environment variable placeholder in model string if present."""
     if not val:
-        return "gemini-2.5-flash" if provider == "gemini" else "llama3.2"
+        return "gemini-2.5-flash"
 
     raw = val.strip()
     m = re.match(r"^\$\{?([A-Za-z0-9_]+)\}?$", raw)
@@ -42,7 +42,7 @@ def resolve_model_name(val: str, provider: str) -> str:
                 return str(cfg_val)
         except Exception:
             pass
-        return "gemini-2.5-flash" if provider == "gemini" else "llama3.2"
+        return "gemini-2.5-flash"
     return raw
 
 
@@ -51,7 +51,7 @@ class ModelEntry(BaseModel):
 
     id: str = Field(..., description="Unique model identifier")
     label: str = Field(..., description="Human-readable label")
-    provider: Literal["gemini", "ollama", "openai_compatible"] = Field(..., description="Provider type")
+    provider: Literal["gemini", "openai_compatible"] = Field(..., description="Provider type")
     model: str = Field(..., description="Model name or environment variable template")
     local: bool = Field(default=False, description="Whether inference runs locally")
     # base_url is operator-controlled config and must never come from a request.
@@ -69,9 +69,9 @@ class ModelEntry(BaseModel):
     @classmethod
     def _validate_provider(cls, v: object) -> str:
         s = str(v).lower().strip()
-        if s not in ("gemini", "ollama", "openai_compatible"):
+        if s not in ("gemini", "openai_compatible"):
             raise ValueError(
-                f"Unknown/unsupported provider '{v}'. Supported providers are 'gemini', 'ollama', and 'openai_compatible'."
+                f"Unknown/unsupported provider '{v}'. Supported providers are 'gemini' and 'openai_compatible'."
             )
         return s
 
@@ -191,9 +191,8 @@ def load_model_registry(file_path: str = MODELS_FILE_DEFAULT) -> ModelRegistry:
 def is_model_available(entry: ModelEntry) -> bool:
     """
     Check if a model is currently available:
-    - openai_compatible: requires api_key_env to be set in os.environ (or local Ollama entry) AND has budget.
+    - openai_compatible: requires api_key_env to be set in os.environ (or local entry) AND has budget.
     - gemini: requires GEMINI_API_KEY (if remote) AND has budget.
-    - ollama: local models are available if server responds/configured.
     """
     from app.llm.rate_gate import get_rate_gate
 
@@ -210,10 +209,10 @@ def is_model_available(entry: ModelEntry) -> bool:
 
     if entry.provider == "gemini":
         if not entry.local:
-            return bool(os.getenv("GEMINI_API_KEY", "").strip())
-        return True
-
-    if entry.provider == "ollama":
+            from app.config import get_settings
+            cfg_key = get_settings().gemini_api_key or ""
+            env_key = os.getenv("GEMINI_API_KEY", "")
+            return bool((cfg_key or env_key).strip())
         return True
 
     return False

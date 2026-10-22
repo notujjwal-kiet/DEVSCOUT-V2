@@ -10,12 +10,11 @@ from app.config import Settings, get_settings
 
 def test_default_settings(monkeypatch):
     """Settings instantiate with sensible defaults without a .env file."""
-    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     s = Settings()
     assert s.app_env == "development"
     assert s.app_port == 8000
-    assert "11434" in s.ollama_host
-    assert s.ollama_model != ""
+    assert s.llm_provider == "gemini"
+    assert s.gemini_model != ""
     assert 0.0 < s.confidence_threshold <= 1.0
     assert s.max_evidence_retry_loops >= 1
 
@@ -36,11 +35,11 @@ def test_get_settings_returns_singleton():
     get_settings.cache_clear()
 
 
-def test_ollama_model_from_env(monkeypatch):
-    """OLLAMA_MODEL env var overrides the default."""
-    monkeypatch.setenv("OLLAMA_MODEL", "mistral")
+def test_gemini_model_from_env(monkeypatch):
+    """GEMINI_MODEL env var overrides the default."""
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-pro")
     s = Settings()
-    assert s.ollama_model == "mistral"
+    assert s.gemini_model == "gemini-1.5-pro"
 
 
 def test_settings_caps_and_evidence_ttl(monkeypatch):

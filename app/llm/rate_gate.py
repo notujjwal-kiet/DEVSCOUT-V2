@@ -62,7 +62,7 @@ class GeminiRateGate:
     def _get_model_limits(self, model_id: str) -> tuple[int, int | None, bool]:
         """
         Return (rpm, rpd, is_unlimited).
-        Local/ollama models are unlimited.
+        Local models are unlimited.
         Uses rpm/rpd from registry, or instance explicit overrides.
         """
         try:
@@ -71,7 +71,7 @@ class GeminiRateGate:
             reg = get_model_registry()
             entry = reg.get_model(model_id)
             if entry is not None:
-                if entry.local or entry.provider == "ollama" or (entry.rpm is None and entry.rpd is None):
+                if entry.local or (entry.rpm is None and entry.rpd is None):
                     return (0, None, True)
 
                 rpm = self._explicit_rpm if self._explicit_rpm is not None else (entry.rpm if entry.rpm is not None else 5)

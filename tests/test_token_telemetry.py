@@ -3,7 +3,7 @@ tests/test_token_telemetry.py
 
 Test Suite 5: Token & Cost Telemetry
 - Fake Gemini client with usage_metadata -> tokens, latency, and cost recorded
-- Fake Ollama response with prompt_eval_count/eval_count recorded -> tokens recorded, cost 0.0
+- Local response with tokens recorded -> cost 0.0 for local models
 - Provider without usage -> tokens None (not 0)
 - Unknown model -> cost None (null)
 Zero network calls: mock response objects and pure telemetry methods.
@@ -44,7 +44,7 @@ def test_gemini_usage_metadata_tokens_latency_and_cost():
         latency_ms=245.5,
     )
 
-    metrics.fill_tokens(gemini_resp, model_name="gemini-2.5-flash", is_ollama=False)
+    metrics.fill_tokens(gemini_resp, model_name="gemini-2.5-flash")
 
     assert metrics.prompt_tokens == 1_000_000
     assert metrics.completion_tokens == 1_000_000
@@ -56,12 +56,12 @@ def test_gemini_usage_metadata_tokens_latency_and_cost():
     assert round(metrics.cost_usd, 4) == 0.3750
 
 
-def test_ollama_prompt_eval_and_eval_count_recorded_zero_cost():
-    """Ollama response with prompt_eval_count and eval_count records tokens and sets cost to 0.0."""
-    ollama_resp_dict = {
-        "prompt_eval_count": 850,
-        "eval_count": 350,
-        "response": "ok",
+def test_local_model_recorded_zero_cost():
+    """Local response with prompt_tokens and completion_tokens records tokens and sets cost to 0.0."""
+    resp_dict = {
+        "prompt_tokens": 850,
+        "completion_tokens": 350,
+        "total_tokens": 1200,
     }
     metrics = StageMetrics(
         stage_id=2,
@@ -69,13 +69,13 @@ def test_ollama_prompt_eval_and_eval_count_recorded_zero_cost():
         latency_ms=180.0,
     )
 
-    metrics.fill_tokens(ollama_resp_dict, model_name="qwen3.5:4b", is_ollama=True)
+    metrics.fill_tokens(resp_dict, model_name="local-model", is_local=True)
 
     assert metrics.prompt_tokens == 850
     assert metrics.completion_tokens == 350
     assert metrics.total_tokens == 1200
     assert metrics.latency_ms == 180.0
-    # Ollama is local, so cost must be 0.0
+    # Local model is local, so cost must be 0.0
     assert metrics.cost_usd == 0.0
 
 
@@ -108,7 +108,7 @@ def test_unknown_model_leaves_cost_none():
         stage_name="Explanation",
     )
 
-    metrics.fill_tokens(gemini_resp, model_name="unregistered-custom-model-v99", is_ollama=False)
+    metrics.fill_tokens(gemini_resp, model_name="unregistered-custom-model-v99")
 
     assert metrics.prompt_tokens == 500
     assert metrics.completion_tokens == 200
@@ -119,8 +119,8 @@ def test_unknown_model_leaves_cost_none():
 
 def test_calculate_token_cost_function_direct():
     """Unit tests for config.calculate_token_cost pricing lookup."""
-    # Ollama is always 0.0
-    assert calculate_token_cost("ollama-model", 1000, 500, is_ollama=True) == 0.0
+    # Local model is always 0.0
+    assert calculate_token_cost("local-model", 1000, 500, is_local=True) == 0.0
 
     # Both None tokens -> None cost
     assert calculate_token_cost("gemini-2.5-flash", None, None) is None

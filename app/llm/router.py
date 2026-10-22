@@ -3,7 +3,7 @@ app/llm/router.py
 
 Dynamic provider routing and failover across registered models:
 - Validates requested_id against registry (raises HTTP 422 if unknown).
-- If requested_id is given: used alone, with Ollama fallback only if LLM_FALLBACK=ollama.
+- If requested_id is given: used alone, with fallback if LLM_FALLBACK is set.
 - In auto mode: choose the lowest-priority-number model that has budget left.
 - When a call fails with quota/rate/daily budget, moves to the next model once.
 - Grounded search (discovery) only runs on Gemini models that have budget left.
@@ -226,7 +226,7 @@ async def get_provider_for(
     """
     Get provider for pipeline stage:
     - If requested_id is given: must exist in registry (else 422), used alone,
-      with Ollama fallback only if LLM_FALLBACK=ollama.
+      with fallback if configured.
     - In auto mode: choose lowest-priority-number model with budget left;
       when a call fails with quota/rate/daily budget, move to the next model once.
     """
@@ -243,11 +243,10 @@ async def get_provider_for(
             )
 
         fallback_entry: ModelEntry | None = None
-        # Ollama fallback only if LLM_FALLBACK=ollama
-        fb_env = os.getenv("LLM_FALLBACK", "").lower().strip()
-        if fb_env == "ollama":
+        fb_env = os.getenv("LLM_FALLBACK", "").strip()
+        if fb_env:
             for m in reg.list_models():
-                if m.provider == "ollama" and m.id != entry.id:
+                if (m.id == fb_env or m.provider == fb_env) and m.id != entry.id:
                     fallback_entry = m
                     break
 
@@ -266,19 +265,12 @@ async def get_provider_for(
     available_models = [m for m in models if is_model_available(m)]
 
     if not available_models:
-        # If remote models exhausted/unavailable, fallback to first local/ollama model
-        local_models = [m for m in models if m.local or m.provider == "ollama"]
-        primary_entry = local_models[0] if local_models else models[0]
+        primary_entry = models[0] if models else None
         fallback_entry = None
     else:
         primary_entry = available_models[0]
-        # Next candidate model by priority from available models (or local fallback)
         remaining = [m for m in available_models if m.id != primary_entry.id]
-        if not remaining:
-            local_models = [m for m in models if (m.local or m.provider == "ollama") and m.id != primary_entry.id]
-            fallback_entry = local_models[0] if local_models else None
-        else:
-            fallback_entry = remaining[0]
+        fallback_entry = remaining[0] if remaining else None
 
     return RoutedProvider(
         primary_entry=primary_entry,

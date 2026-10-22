@@ -134,17 +134,17 @@ DEVSCOUT incorporates a multi-tier model management system designed to operate r
 
 ### 1. Model Registry (`models.json`)
 Models are configured in `models.json` and validated at startup using Pydantic:
-- **Supported Providers**: `gemini`, `ollama`, `openai_compatible`.
-- **Security Rule**: `base_url` is operator-controlled configuration and must never come from a user request. HTTPS is enforced for remote endpoints (HTTP permitted solely for localhost Ollama).
+- **Supported Providers**: `gemini`, `openai_compatible`.
+- **Security Rule**: `base_url` is operator-controlled configuration and must never come from a user request. HTTPS is enforced for remote endpoints (HTTP permitted solely for localhost endpoints).
 
 ### 2. Per-Model Rate Gate (`app/llm/rate_gate.py`)
 - **Sliding-Window RPM Limiter**: Every model has an independent sliding window (default 4 RPM for Gemini) that queues requests asynchronously via `asyncio.sleep` rather than failing.
 - **Daily Budget Limit (RPD)**: Daily request counter persisted in `data/quota.json` (resets at midnight in UTC-8). If the daily budget is exhausted, it raises `LLMProviderError("Gemini daily budget reached")` immediately before dispatching the request.
-- **Local Models**: Local Ollama models are designated as unlimited.
+- **Local Models**: Local/self-hosted models are designated as unlimited.
 
 ### 3. Dynamic Router & Fallback (`app/llm/router.py`)
 - Evaluates candidate models by priority and available daily budget.
-- If a primary model encounters rate limits or daily quota exhaustion, the router automatically fails over to the configured secondary model (e.g. local Ollama).
+- If a primary model encounters rate limits or daily quota exhaustion, the router automatically fails over to any configured secondary model.
 - Grounded web search is restricted to Gemini models with active budget.
 
 ### 4. File-Based Caches
@@ -157,7 +157,7 @@ Models are configured in `models.json` and validated at startup using Pydantic:
 
 ### Prerequisites
 - Python 3.11 or 3.12
-- Local Ollama instance (optional, for offline/local model fallback)
+- Google Gemini API key
 
 ### 1. Clone & Create Virtual Environment
 
@@ -195,17 +195,12 @@ APP_PORT=8000
 
 # Primary LLM provider
 LLM_PROVIDER=gemini
-LLM_FALLBACK=ollama
 
 # Google Gemini API Key
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_RPM=4
 GEMINI_RPD_LIMIT=18
-
-# Local Ollama (Optional)
-OLLAMA_HOST=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.2
 ```
 
 ### 3. Start the Backend Server
@@ -264,7 +259,7 @@ The entire suite executes in approximately **5.5 seconds**.
 
 1. **In-Memory Session & Job Store**: Active learning sessions, async jobs, and question state reside in server memory (with automatic TTL eviction and a 1,000-session cap). Restarting the backend server drops in-flight interactive sessions (persisted disk caches and quotas remain intact).
 2. **Deterministic Heuristic Answer Checking**: Understanding question evaluation uses keyword and token overlap heuristics rather than subjective AI grading or human review.
-3. **Free-Tier Gemini Quotas**: Default limits of 4 RPM and 18 requests per day require requests to queue or fall back to local Ollama during frequent usage.
+3. **Free-Tier Gemini Quotas**: Default limits of 4 RPM and 18 requests per day require requests to queue asynchronously when limits are reached.
 4. **No Multi-User Authentication**: Intended for individual developer local setups or controlled private deployments. Bearer token protection acts as a shared API key rather than full user account isolation.
 
 ---

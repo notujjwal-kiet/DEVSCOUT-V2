@@ -34,8 +34,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(
         "devscout_startup",
         env=cfg.app_env,
-        ollama_host=cfg.ollama_host,
-        ollama_model=cfg.ollama_model,
+        gemini_model=cfg.gemini_model,
     )
     yield
     logger.info("devscout_shutdown")

@@ -28,6 +28,6 @@ async def test_health_response_shape():
     assert data["status"] == "ok"
     assert "version" in data
     assert "environment" in data
-    assert "ollama_host" in data
-    assert "ollama_model" in data
+    assert data.get("provider") == "gemini"
+    assert "gemini_model" in data
     assert "timestamp" in data

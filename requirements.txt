@@ -17,10 +17,7 @@ beautifulsoup4==4.12.3
 lxml==5.3.0
 
 # ── AI / Agents ────────────────────────────────────────────────────────────────
-# strands-agents-tools removed (we write our own research tools).
-# [ollama] extra installs the `ollama` client (>=0.4.8,<1.0.0) so that
-# `from strands.models.ollama import OllamaModel` resolves correctly.
-strands-agents[ollama]==1.61.0
+strands-agents==1.61.0
 google-genai==2.31.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

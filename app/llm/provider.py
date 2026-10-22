@@ -1,8 +1,8 @@
 """
 app/llm/provider.py
 
-LLM Provider interface and stubs for DEVSCOUT.
-Protocol LLMProvider with Ollama and Gemini stub implementations (no network calls).
+LLM Provider interface and implementations for DEVSCOUT.
+Protocol LLMProvider with Gemini and OpenAI-compatible implementations.
 Provider is chosen by the LLM_PROVIDER environment variable; model names are configurable.
 """
 from __future__ import annotations
@@ -49,171 +49,7 @@ class LLMProvider(Protocol):
         ...
 
 
-class OllamaProvider:
-    """Ollama local model provider using httpx async HTTP API."""
 
-    def __init__(
-        self,
-        host: str | None = None,
-        model_name: str | None = None,
-        think: bool | None = None,
-        timeout: float | None = None,
-        client: httpx.AsyncClient | None = None,
-        transport: httpx.AsyncBaseTransport | None = None,
-        model_id: str = "ollama-local",
-        rate_gate: object | None = None,
-        **kwargs: object,
-    ):
-        cfg = None
-        try:
-            from app.config import get_settings
-
-            cfg = get_settings()
-        except Exception:
-            pass
-
-        self.model_id = model_id
-        self.rate_gate = rate_gate
-
-        self.host = (
-            host
-            or os.getenv("OLLAMA_HOST")
-            or (cfg.ollama_host if cfg else "http://localhost:11434")
-        )
-        self.model_name = (
-            model_name
-            or os.getenv("OLLAMA_MODEL")
-            or (cfg.ollama_model if cfg else "llama3.2")
-        )
-        if think is not None:
-            self.think = think
-        elif os.getenv("OLLAMA_THINK") is not None:
-            self.think = os.getenv("OLLAMA_THINK", "false").lower() in ("true", "1", "yes")
-        elif cfg is not None and hasattr(cfg, "ollama_think"):
-            self.think = cfg.ollama_think
-        else:
-            self.think = False
-
-        if timeout is not None:
-            self.timeout = float(timeout)
-        elif os.getenv("OLLAMA_TIMEOUT") is not None:
-            self.timeout = float(os.getenv("OLLAMA_TIMEOUT"))
-        elif cfg is not None and hasattr(cfg, "ollama_timeout"):
-            self.timeout = float(cfg.ollama_timeout)
-        else:
-            self.timeout = 120.0
-
-        if client is not None:
-            self._client = client
-        elif transport is not None:
-            self._client = httpx.AsyncClient(transport=transport, timeout=self.timeout)
-        else:
-            self._client = None
-
-        self.last_response: dict[str, object] | None = None
-        self.last_usage_data: dict[str, object] | None = None
-
-    async def _post_chat(self, payload: dict[str, object]) -> httpx.Response:
-        url = f"{self.host.rstrip('/')}/api/chat"
-        rate_gate = self.rate_gate
-        if rate_gate is None:
-            try:
-                from app.llm.rate_gate import get_rate_gate
-
-                rate_gate = get_rate_gate()
-            except Exception:
-                pass
-        if rate_gate is not None and hasattr(rate_gate, "acquire"):
-            await rate_gate.acquire(self.model_id)
-
-        try:
-            if self._client is not None:
-                response = await self._client.post(url, json=payload)
-            else:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.post(url, json=payload)
-            response.raise_for_status()
-            return response
-        except httpx.RequestError as exc:
-            raise LLMProviderError(
-                f"Failed to connect to Ollama host at '{self.host}': {exc}"
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429 or "quota" in exc.response.text.lower():
-                raise RateLimitError(
-                    f"Ollama host '{self.host}' rate limit exceeded (HTTP 429): {exc.response.text}"
-                ) from exc
-            raise LLMProviderError(
-                f"Ollama host '{self.host}' returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
-
-    async def generate(
-        self, prompt: str, system_prompt: str | None = None, **kwargs: object
-    ) -> str:
-        """Generate plain text from prompt using Ollama chat endpoint."""
-        messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        payload: dict[str, object] = {
-            "model": self.model_name,
-            "messages": messages,
-            "stream": False,
-            "think": self.think,
-        }
-        response = await self._post_chat(payload)
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise LLMProviderError(
-                f"Failed to parse JSON response from Ollama host at '{self.host}': {exc}"
-            ) from exc
-
-        message = data.get("message")
-        self.last_response = data
-        self.last_usage_data = data
-        if isinstance(message, dict):
-            return str(message.get("content", ""))
-        return str(data.get("response", ""))
-
-    async def generate_structured(
-        self,
-        prompt: str,
-        schema: type[T],
-        system_prompt: str | None = None,
-        **kwargs: object,
-    ) -> T:
-        """Generate structured output adhering to schema using Ollama chat endpoint."""
-        messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        payload: dict[str, object] = {
-            "model": self.model_name,
-            "messages": messages,
-            "stream": False,
-            "think": self.think,
-            "format": schema.model_json_schema(),
-        }
-        response = await self._post_chat(payload)
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise LLMProviderError(
-                f"Failed to parse JSON response from Ollama host at '{self.host}': {exc}"
-            ) from exc
-
-        self.last_response = data
-        self.last_usage_data = data
-        message = data.get("message")
-        if isinstance(message, dict):
-            content = str(message.get("content", ""))
-        else:
-            content = str(data.get("response", ""))
-
-        return schema.model_validate_json(content)
 
 
 class OpenAICompatibleProvider:
@@ -873,7 +709,7 @@ def get_llm_provider(
 ) -> LLMProvider:
     """
     Factory function returning the configured LLMProvider.
-    Selected via provider_name or LLM_PROVIDER env var ('ollama' | 'gemini').
+    Selected via provider_name or LLM_PROVIDER env var ('gemini' | 'openai_compatible').
     """
     cfg = None
     try:
@@ -886,7 +722,7 @@ def get_llm_provider(
     chosen = (
         provider_name
         or os.getenv("LLM_PROVIDER")
-        or (cfg.llm_provider if cfg else "ollama")
+        or (cfg.llm_provider if cfg else "gemini")
     ).lower().strip()
 
     base_url = kwargs.pop("base_url", None)
@@ -896,9 +732,6 @@ def get_llm_provider(
     if chosen == "gemini":
         mid = model_id or "gemini-main"
         return GeminiProvider(model_name=model_name, model_id=mid, **kwargs)
-    elif chosen == "ollama":
-        mid = model_id or "ollama-local"
-        return OllamaProvider(model_name=model_name, model_id=mid, **kwargs)
     elif chosen == "openai_compatible":
         mid = model_id or "openai-compatible"
         return OpenAICompatibleProvider(
@@ -911,6 +744,6 @@ def get_llm_provider(
         )
     else:
         raise ValueError(
-            f"Unsupported LLM_PROVIDER '{chosen}'. Supported options are 'gemini', 'ollama', and 'openai_compatible'."
+            f"Unsupported LLM_PROVIDER '{chosen}'. Supported options are 'gemini' and 'openai_compatible'."
         )
 

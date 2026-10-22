@@ -5,7 +5,7 @@ from app.llm.provider import (
     GeminiProvider,
     LLMProvider,
     LLMProviderError,
-    OllamaProvider,
+    OpenAICompatibleProvider,
     RateLimitError,
     get_llm_provider,
 )
@@ -14,7 +14,7 @@ __all__ = [
     "GeminiProvider",
     "LLMProvider",
     "LLMProviderError",
-    "OllamaProvider",
+    "OpenAICompatibleProvider",
     "RateLimitError",
     "get_llm_provider",
 ]
