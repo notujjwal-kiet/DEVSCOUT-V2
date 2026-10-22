@@ -44,10 +44,22 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
 def create_app() -> FastAPI:
     cfg = get_settings()
 
+    openapi_tags = [
+        {
+            "name": "learning",
+            "description": "Evidence-backed developer learning pipeline, understanding check, and code assistance gate operations.",
+        },
+        {
+            "name": "health",
+            "description": "Health checks, service status, model registry, and Gemini quota status.",
+        },
+    ]
+
     application = FastAPI(
         title="DEVSCOUT",
-        description="AI-powered technical decision intelligence platform.",
+        description="Evidence-backed developer learning companion.",
         version="0.1.0",
+        openapi_tags=openapi_tags,
         lifespan=lifespan,
         docs_url="/docs" if cfg.app_env == "development" else None,
         redoc_url="/redoc" if cfg.app_env == "development" else None,
