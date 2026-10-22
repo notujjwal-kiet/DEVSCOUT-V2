@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import structlog
 
-from app.llm.provider import GeminiProvider
+from app.llm.provider import LLMProvider
 from app.models.pipeline import (
     GoalContextResult,
     IntentPlanResult,
@@ -34,16 +34,19 @@ SYSTEM_PROMPT = (
 async def run(
     goal_context: GoalContextResult,
     depth_level: str = "intermediate",
-    provider: GeminiProvider | None = None,
+    provider: LLMProvider | object | None = None,
+    requested_model_id: str | None = None,
 ) -> IntentPlanResult:
     """
     Stage 2 entry point: Generate structured learning plan with milestones
-    via GeminiProvider.generate_structured (no search tool, schema allowed).
+    via routed provider generate_structured (no search tool, schema allowed).
     """
     started_at = datetime.now(UTC)
 
     if provider is None:
-        provider = GeminiProvider()
+        from app.llm.router import get_provider_for
+
+        provider = await get_provider_for(stage=STAGE_ID, requested_id=requested_model_id)
 
     prompt = (
         f"Design a structured learning plan for the following learner and goal:\n\n"

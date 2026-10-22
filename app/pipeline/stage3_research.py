@@ -190,7 +190,14 @@ async def run(
                 lang = "javascript"
                 break
 
-    allow_gh_queries = enable_github_queries if enable_github_queries is not None else cfg.enable_github_queries
+    from app.llm.router import can_run_grounded_search
+
+    grounded_allowed = can_run_grounded_search(provider)
+    allow_gh_queries = (
+        enable_github_queries
+        if enable_github_queries is not None
+        else (cfg.enable_github_queries or not grounded_allowed)
+    )
     allow_comm_queries = enable_community_queries if enable_community_queries is not None else cfg.enable_community_queries
 
     # 1. Build query strings (single grounded discovery call per pass by default; github & community optional/off by default)
@@ -442,6 +449,8 @@ async def run(
         ended_at=ended_at,
         latency_ms=(ended_at - started_at).total_seconds() * 1000.0,
     )
+    if provider is not None:
+        metrics.fill_tokens(provider)
 
     logger.info(
         "stage3_completed",

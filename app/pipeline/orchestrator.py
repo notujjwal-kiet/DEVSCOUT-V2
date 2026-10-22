@@ -26,7 +26,6 @@ import httpx
 import structlog
 
 from app.config import SEED_DOCS, get_settings
-from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
     AttemptStatus,
     CodeGateDecision,
@@ -231,7 +230,7 @@ def _fallback_understanding_check_result(
 
 async def run_learning_pipeline(
     request: LearnRequest,
-    provider: GeminiProvider | None = None,
+    provider: object | None = None,
     github_connector: GitHubConnector | None = None,
     http_client: httpx.AsyncClient | None = None,
     session_store: SessionStore | None = None,
@@ -322,6 +321,7 @@ async def run_learning_pipeline(
         goal_context=stage1_result,
         depth_level=depth,
         provider=provider,
+        requested_model_id=getattr(request, "model_id", None),
     )
     # Ensure server-generated plan_id and created_at exist
     if stage2_result.plan:
@@ -526,6 +526,7 @@ async def run_learning_pipeline(
             plan_result=stage2_result,
             provider=provider,
             auto_repair=True,
+            requested_model_id=getattr(request, "model_id", None),
         )
     except Exception as exc:
         logger.warning("stage5_failed_degrading_gracefully", error=str(exc))
@@ -700,6 +701,34 @@ async def run_learning_pipeline(
         errors=all_discovery_errors,
     )
 
+    # ── Transparency: models_used & FALLBACK_MODEL_USED warning ──────────────
+    models_used: list[str] = list(dict.fromkeys(
+        m.model_id for m in metrics if m.model_id and isinstance(m.model_id, str)
+    ))
+
+    from app.llm.registry import get_model_registry
+
+    reg = get_model_registry()
+    all_registered = reg.list_models()
+    first_choice_model_id = getattr(request, "model_id", None)
+    if not first_choice_model_id and all_registered:
+        first_choice_model_id = all_registered[0].id
+
+    fallback_model_used = False
+    for m in metrics:
+        if m.model_id and isinstance(m.model_id, str) and first_choice_model_id and m.model_id != first_choice_model_id:
+            fallback_model_used = True
+            break
+
+    if fallback_model_used:
+        warnings.append(
+            ResponseWarning(
+                severity="warning",
+                code="FALLBACK_MODEL_USED",
+                message=f"One or more stages ran on a fallback model rather than first-choice model '{first_choice_model_id}'.",
+            )
+        )
+
     response = LearningResponse(
         learner_profile=stage1_result.profile,
         learning_plan=stage2_result.plan,
@@ -722,6 +751,7 @@ async def run_learning_pipeline(
         evidence_summary=evidence_summary,
         warnings=warnings,
         metrics=metrics,
+        models_used=models_used,
     )
     response.quality_score = compute_quality_score(response, evidence_status)
 
@@ -752,7 +782,7 @@ async def run_learning_pipeline(
 async def handle_code_request(
     request: CodeRequest,
     session_store: SessionStore | None = None,
-    provider: GeminiProvider | None = None,
+    provider: object | None = None,
 ) -> LearningResponse:
     """
     Handle POST /api/code-request:
@@ -925,7 +955,9 @@ async def handle_code_request(
         # ── Req 4: Full Code Generation ────────────────────────────────────────────
         if gate_result.decision.level == CodeGateLevel.FULL:
             if provider is None:
-                provider = GeminiProvider()
+                from app.llm.router import get_provider_for
+
+                provider = await get_provider_for(stage="code")
 
             lr = session.learning_response
             topic = lr.explanation.topic if lr.explanation else "Implementation"

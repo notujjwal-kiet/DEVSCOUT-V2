@@ -12,7 +12,7 @@ from typing import TypeVar
 from pydantic import BaseModel, ValidationError
 import structlog
 
-from app.llm.provider import GeminiProvider, LLMProviderError, RateLimitError
+from app.llm.provider import LLMProvider, LLMProviderError, RateLimitError
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +36,7 @@ def is_parse_or_validation_error(exc: Exception) -> bool:
 
 
 async def generate_structured_with_retry(
-    provider: GeminiProvider,
+    provider: LLMProvider | object,
     prompt: str,
     schema: type[T],
     system_prompt: str | None = None,

@@ -13,7 +13,6 @@ import structlog
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.llm.provider import GeminiProvider
 from app.models.pipeline import (
     AnswerSubmission,
     ConceptEdge,
@@ -321,7 +320,7 @@ def check_understanding_completion(
 async def run(
     explanation_result: ExplanationResult,
     learner_response: str | None = None,
-    provider: GeminiProvider | None = None,
+    provider: object | None = None,
     project: str | None = None,
 ) -> UnderstandingCheckResult:
     """

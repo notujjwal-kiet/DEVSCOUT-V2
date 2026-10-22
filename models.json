@@ -1,0 +1,24 @@
+[
+  {
+    "id": "gemini-main",
+    "label": "Gemini Main",
+    "provider": "gemini",
+    "model": "${GEMINI_MODEL}",
+    "local": false,
+    "rpm": 5,
+    "rpd": 20,
+    "tier": "stable",
+    "priority": 1
+  },
+  {
+    "id": "ollama-local",
+    "label": "Ollama Local",
+    "provider": "ollama",
+    "model": "${OLLAMA_MODEL}",
+    "local": true,
+    "rpm": null,
+    "rpd": null,
+    "tier": "stable",
+    "priority": 9
+  }
+]

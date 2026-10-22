@@ -60,6 +60,7 @@ class OllamaProvider:
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        model_id: str = "ollama-local",
     ):
         cfg = None
         try:
@@ -68,6 +69,8 @@ class OllamaProvider:
             cfg = get_settings()
         except Exception:
             pass
+
+        self.model_id = model_id
 
         self.host = (
             host
@@ -324,6 +327,7 @@ class GeminiProvider:
         thinking_budget: int | None = None,
         timeout: float | None = None,
         rate_gate: object | None = None,
+        model_id: str = "gemini-main",
     ):
         cfg = None
         try:
@@ -343,6 +347,7 @@ class GeminiProvider:
                 "GEMINI_MODEL is not set. Please configure GEMINI_MODEL in .env."
             )
         self.model_name = model
+        self.model_id = model_id
         self.rate_gate = rate_gate
 
         self.api_key = (
@@ -449,7 +454,13 @@ class GeminiProvider:
 
         while True:
             # Pass through the rate gate before each call (including 5xx retries)
-            await gate.acquire()
+            if hasattr(gate, "acquire"):
+                try:
+                    await gate.acquire(self.model_id)
+                except TypeError:
+                    await gate.acquire()
+            elif asyncio.iscoroutinefunction(gate):
+                await gate()
 
             try:
                 return await asyncio.wait_for(call_fn(), timeout=self.timeout)
@@ -585,6 +596,7 @@ class GeminiProvider:
 def get_llm_provider(
     provider_name: str | None = None,
     model_name: str | None = None,
+    model_id: str | None = None,
     **kwargs: object,
 ) -> LLMProvider:
     """
@@ -606,9 +618,11 @@ def get_llm_provider(
     ).lower().strip()
 
     if chosen == "gemini":
-        return GeminiProvider(model_name=model_name, **kwargs)
+        mid = model_id or "gemini-main"
+        return GeminiProvider(model_name=model_name, model_id=mid, **kwargs)
     elif chosen == "ollama":
-        return OllamaProvider(model_name=model_name, **kwargs)
+        mid = model_id or "ollama-local"
+        return OllamaProvider(model_name=model_name, model_id=mid, **kwargs)
     else:
         raise ValueError(
             f"Unsupported LLM_PROVIDER '{chosen}'. Supported options are 'ollama' and 'gemini'."

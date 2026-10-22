@@ -170,6 +170,34 @@ async def get_quota() -> dict[str, int]:
     return get_rate_gate().get_quota_status()
 
 
+@router.get("/models", summary="List registered models and quota availability")
+async def list_models() -> list[dict[str, object]]:
+    """Return registered models with quota availability and limits without secrets."""
+    from app.llm.registry import get_model_registry
+    from app.llm.rate_gate import get_rate_gate
+
+    reg = get_model_registry()
+    gate = get_rate_gate()
+
+    res: list[dict[str, object]] = []
+    for m in reg.list_models():
+        used = gate._get_used_today(m.id) if not m.local else 0
+        limit = m.rpd
+        available = (used < limit) if (limit is not None and not m.local) else True
+
+        res.append({
+            "id": m.id,
+            "label": m.label,
+            "provider": m.provider,
+            "local": m.local,
+            "tier": m.tier,
+            "available": available,
+            "used_today": used,
+            "limit_today": limit,
+        })
+    return res
+
+
 @router.post("/code-request", response_model=LearningResponse, summary="Request code or submit answers")
 async def request_code(request: CodeRequest) -> LearningResponse:
     """

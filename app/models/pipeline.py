@@ -92,6 +92,7 @@ class StageMetrics(BaseModel):
     completion_tokens: int | None = None
     total_tokens: int | None = None
     cost_usd: float | None = None
+    model_id: str | None = None
 
     def fill_tokens(
         self,
@@ -107,6 +108,11 @@ class StageMetrics(BaseModel):
         - Cost: computed from config price table; 0.0 for Ollama, None for unknown models.
         """
         from app.config import calculate_token_cost, get_settings
+
+        if hasattr(response_or_provider, "model_id"):
+            mid = getattr(response_or_provider, "model_id", None)
+            if isinstance(mid, str) and mid:
+                self.model_id = mid
 
         prompt_val: int | None = None
         cand_val: int | None = None
@@ -501,6 +507,7 @@ class LearningResponse(BaseModel):
     evidence_summary: EvidenceSummary = Field(default_factory=EvidenceSummary)
     warnings: list[ResponseWarning] = Field(default_factory=list)
     metrics: list[StageMetrics] = Field(default_factory=list)
+    models_used: list[str] = Field(default_factory=list, description="Ordered, unique list of models used across stages")
     from_cache: bool = False
     generated_at: datetime | None = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -564,6 +571,21 @@ class LearnRequest(BaseModel):
     target_skills: list[str] = Field(default_factory=list)
     wants_snippet: bool = Field(default=False)
     refresh: bool = Field(default=False, description="Bypass request-level response cache if true")
+    model_id: str | None = Field(default=None, description="Optional requested model ID from models.json registry")
+
+    @field_validator("model_id")
+    @classmethod
+    def _validate_model_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        from app.llm.registry import get_model_registry
+
+        reg = get_model_registry()
+        if not reg.has_model(v):
+            raise ValueError(
+                f"Unknown model_id '{v}'. Available models: {reg.get_model_ids()}"
+            )
+        return v
 
 
 class LearnJobRecord(BaseModel):

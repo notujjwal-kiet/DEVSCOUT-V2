@@ -19,6 +19,18 @@ logger = structlog.get_logger(__name__)
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     """Startup / shutdown lifecycle."""
     cfg = get_settings()
+    from app.llm.registry import load_model_registry
+
+    try:
+        registry = load_model_registry()
+        logger.info(
+            "devscout_models_registered",
+            models=registry.get_model_ids(),
+        )
+    except Exception as exc:
+        logger.error("model_registry_startup_failed", error=str(exc))
+        raise
+
     logger.info(
         "devscout_startup",
         env=cfg.app_env,

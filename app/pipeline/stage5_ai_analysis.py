@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import structlog
 
 from app.config import get_settings
-from app.llm.provider import GeminiProvider
+from app.llm.provider import LLMProvider
 from app.models.pipeline import (
     EvidenceReviewResult,
     ExplanationResult,
@@ -62,15 +62,16 @@ def extract_plan_topics(plan_result: IntentPlanResult) -> list[str]:
 async def run(
     evidence_review: EvidenceReviewResult,
     plan_result: IntentPlanResult,
-    provider: GeminiProvider | None = None,
+    provider: LLMProvider | object | None = None,
     auto_repair: bool = True,
     top_n: int | None = None,
     top_n_resources: int | None = None,
     excerpt_budget: int | None = None,
+    requested_model_id: str | None = None,
 ) -> ExplanationResult:
     """
     Stage 5 entry point: Generate concept map and explanation with source citations
-    via GeminiProvider.generate_structured (no search tool, schema allowed).
+    via routed provider generate_structured (no search tool, schema allowed).
     Iterates over milestones/topics from the plan. For each topic, includes top-N
     Resources by evidence_score WITH excerpts in the prompt, respecting excerpt_budget.
     """
@@ -91,7 +92,9 @@ async def run(
     started_at = datetime.now(UTC)
 
     if provider is None:
-        provider = GeminiProvider()
+        from app.llm.router import get_provider_for
+
+        provider = await get_provider_for(stage=STAGE_ID, requested_id=requested_model_id)
 
     topics = extract_plan_topics(plan_result)
 
