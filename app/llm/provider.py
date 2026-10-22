@@ -61,6 +61,8 @@ class OllamaProvider:
         client: httpx.AsyncClient | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         model_id: str = "ollama-local",
+        rate_gate: object | None = None,
+        **kwargs: object,
     ):
         cfg = None
         try:
@@ -71,6 +73,7 @@ class OllamaProvider:
             pass
 
         self.model_id = model_id
+        self.rate_gate = rate_gate
 
         self.host = (
             host
@@ -112,6 +115,17 @@ class OllamaProvider:
 
     async def _post_chat(self, payload: dict[str, object]) -> httpx.Response:
         url = f"{self.host.rstrip('/')}/api/chat"
+        rate_gate = self.rate_gate
+        if rate_gate is None:
+            try:
+                from app.llm.rate_gate import get_rate_gate
+
+                rate_gate = get_rate_gate()
+            except Exception:
+                pass
+        if rate_gate is not None and hasattr(rate_gate, "acquire"):
+            await rate_gate.acquire(self.model_id)
+
         try:
             if self._client is not None:
                 response = await self._client.post(url, json=payload)
@@ -220,6 +234,7 @@ class OpenAICompatibleProvider:
         client: httpx.AsyncClient | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         rate_gate: object | None = None,
+        **kwargs: object,
     ):
         self.base_url = (base_url or "").rstrip("/")
         self.api_key_env = api_key_env
@@ -584,6 +599,7 @@ class GeminiProvider:
         timeout: float | None = None,
         rate_gate: object | None = None,
         model_id: str = "gemini-main",
+        **kwargs: object,
     ):
         cfg = None
         try:

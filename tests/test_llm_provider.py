@@ -10,6 +10,7 @@ from app.llm.provider import (
     LLMProvider,
     LLMProviderError,
     OllamaProvider,
+    OpenAICompatibleProvider,
     get_llm_provider,
 )
 
@@ -329,3 +330,39 @@ def test_get_llm_provider_invalid():
     """get_llm_provider raises ValueError for unsupported provider."""
     with pytest.raises(ValueError):
         get_llm_provider(provider_name="unsupported-provider")
+
+
+def test_get_llm_provider_accepts_rate_gate_and_kwargs(monkeypatch):
+    """get_llm_provider forwards rate_gate and unknown kwargs without TypeError."""
+    from unittest.mock import MagicMock
+
+    mock_gate = MagicMock()
+    p_ollama = get_llm_provider(
+        provider_name="ollama",
+        model_name="llama3.2",
+        rate_gate=mock_gate,
+        extra_param="extra_value",
+    )
+    assert isinstance(p_ollama, OllamaProvider)
+    assert p_ollama.rate_gate is mock_gate
+
+    p_gemini = get_llm_provider(
+        provider_name="gemini",
+        model_name="gemini-2.5-flash",
+        api_key="fake-key",
+        rate_gate=mock_gate,
+        extra_param="extra_value",
+    )
+    assert isinstance(p_gemini, GeminiProvider)
+    assert p_gemini.rate_gate is mock_gate
+
+    p_openai = get_llm_provider(
+        provider_name="openai_compatible",
+        model_name="qwen",
+        base_url="https://api.example.com/v1",
+        rate_gate=mock_gate,
+        extra_param="extra_value",
+    )
+    assert isinstance(p_openai, OpenAICompatibleProvider)
+    assert p_openai.rate_gate is mock_gate
+
