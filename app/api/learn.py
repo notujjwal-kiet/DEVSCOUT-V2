@@ -163,7 +163,7 @@ async def get_learning_job(job_id: str) -> LearnJobRecord:
 
 
 @router.get("/quota", summary="Get Gemini API quota usage and limits")
-async def get_quota() -> dict[str, int]:
+async def get_quota() -> dict[str, int | None]:
     """Return current daily quota and RPM limits for Gemini API without secrets."""
     from app.llm.rate_gate import get_rate_gate
 
@@ -175,15 +175,19 @@ async def list_models() -> list[dict[str, object]]:
     """Return registered models with quota availability and limits without secrets."""
     from app.llm.registry import get_model_registry, is_model_available
     from app.llm.rate_gate import get_rate_gate
+    from app.providers.registry import get_provider_registry
 
     reg = get_model_registry()
     gate = get_rate_gate()
 
     res: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+
     for m in reg.list_models():
         used = gate._get_used_today(m.id) if not m.local else 0
         limit = m.rpd
         available = is_model_available(m)
+        seen_ids.add(m.id)
 
         res.append({
             "id": m.id,
@@ -197,7 +201,19 @@ async def list_models() -> list[dict[str, object]]:
             "price_in_per_1m": m.price_in_per_1m,
             "price_out_per_1m": m.price_out_per_1m,
         })
+
+    # Include multi-provider registry models (Groq, Cerebras, Ollama)
+    try:
+        prov_reg = get_provider_registry()
+        for info in prov_reg.get_all_models_info():
+            if info["id"] not in seen_ids and info.get("provider") != "gemini":
+                seen_ids.add(info["id"])
+                res.append(info)
+    except Exception:
+        pass
+
     return res
+
 
 
 @router.post("/code-request", response_model=LearningResponse, summary="Request code or submit answers")

@@ -1,272 +1,191 @@
-# DEVSCOUT — Evidence-Backed Developer Learning Companion
+# DEVSCOUT
 
-DEVSCOUT is an AI-powered **learning companion** for software engineers building real-world projects. Instead of acting as an automated code generator or a copy-paste oracle, DEVSCOUT guides developers through hands-on implementation with source-grounded conceptual explanations, sequential milestone planning, comprehension checks, and an evidence-based code assistance gate.
+### Learn While You Build.
 
-The backend exposes a typed FastAPI service structured around a 9-stage learning pipeline, deterministic code gate policies, and strict source-quote matching.
+DEVSCOUT is an AI-assisted developer learning platform that guides learners through project planning, research, concept explanations, guided implementation, understanding checks, and readiness-based code assistance.
 
----
+This repository contains the FastAPI backend. The React + TypeScript frontend is maintained at [Devscout-UI](https://github.com/NotUjjwal-95/Devscout-UI).
 
-## What DEVSCOUT Is (and What It Isn't)
-
-- **A Learning Companion, NOT a Code Generator**: Passive code generation damages developer retention and understanding. DEVSCOUT never presents ungrounded model outputs as authoritative facts.
-- **Checked Against the Source Text**: Every explanation claim must link directly to authoritative technical resources (official documentation, engineering repositories, specifications). Supporting quotes must match the fetched source text verbatim.
-- **Gated Code Assistance**: Full code solutions are locked behind an evidence-based gate. The learner receives conceptual direction and bounded snippets first, unlocking full implementations only after demonstrating understanding or submitting an earnest attempt.
+> **Status note:** On the inspected main branch, the only registered API route is `GET /health`. All other endpoints and provider integrations below are targets until implemented and tested. Update this README as the code changes.
 
 ---
 
-## The 9-Stage Learning Pipeline
+## Product Principles
 
-```
-[1 Goal Context] ──► [2 Learning Plan] ──► [3 Source Discovery] ◄──┐
-                             ▲                     │                │ (Evidence loop:
-                             │                     ▼                │  max retry loops)
-                             │             [4 Evidence Review] ─────┘
-                             │                     │
-                             │                     ▼
-                             │       [5 Concept Mapping & Explanation]
-                             │                     │
-                             │                     ▼
-                             │           [6 Guided Project Work]
-                             │                     │
-                             │                     ▼
-                             │          [7 Understanding Check]
-                             │                     │
-                             │                     ▼
-                             │         [8 Code Assistance Gate]
-                             │                     │
-                             │                     ▼
-                             └──────── [9 Progress & Reflection]
-```
-
-| Stage | Name | Module | Primary Responsibility |
-|:---:|:---|:---|:---|
-| **1** | **Developer Goal & Skill Context** | `app/pipeline/stage1_developer_input.py` | Captures learner profile, technical goal, experience level (beginner/intermediate/advanced), tech stack, and constraints. |
-| **2** | **Intent & Learning Plan** | `app/pipeline/stage2_input_processing.py` | Structures learning outcomes, knowledge gaps, appropriate depth, and sequential milestones. |
-| **3** | **Research & Source Discovery** | `app/pipeline/stage3_research.py` | Discovers multi-perspective sources (official docs, repos, community guides) via Gemini grounded search or seed docs fallback; fetches text safely against SSRF. |
-| **4** | **Evidence Review** | `app/pipeline/stage4_evidence_validation.py` | Evaluates domain authority, time-decay freshness, and tech-stack relevance; flags conflicting or malicious content. Triggers retry loop (4 ➔ 3) if sources are insufficient. |
-| **5** | **Explanation & Concept Mapping** | `app/pipeline/stage5_ai_analysis.py` | Generates deep pedagogical explanations and a concept ontology graph, strictly anchoring claims to excerpts checked against the source text. |
-| **6** | **Guided Project Work** | `app/pipeline/stage6_recommendation.py` | Produces step-by-step implementation tasks, debugging hints, and self-guided checkpoints without dumping full solutions. |
-| **7** | **Understanding Check** | `app/pipeline/stage7_output_validation.py` | Generates 2–3 targeted comprehension questions (conceptual, explain-back, exercise). Evaluates learner answers using a deterministic heuristic. |
-| **8** | **Code Assistance Gate** | `app/pipeline/stage8_decision_report.py` | Enforces the deterministic code policy, deciding whether `EXPLAIN`, `SNIPPET`, `REQUIRE_CHECK`, or `FULL` code may be returned. |
-| **9** | **Progress & Reflection** | `app/pipeline/stage9_developer_feedback.py` | Records learner milestones, reflections, telemetry metrics, and prepares context updates for future sessions. |
-
-### Feedback & Retry Loops
-- **Evidence Loop (Stage 4 ➔ Stage 3)**: When discovered sources lack official documentation or fail freshness thresholds, Stage 4 triggers a targeted retry to Stage 3 with seen URLs excluded (capped by `max_evidence_retry_loops`).
-- **Seed Documentation Fallback**: If grounded web search fails or runs out of quota, authoritative curated seed documentation (FastAPI, Python, Pydantic, React, TypeScript) is automatically ingested.
+- **Teach concepts and support learning, not just generate code.**
+- **Distinguish research-backed claims from model-generated explanations.**
+- **Keep provider credentials on the backend.**
+- **Enforce code-readiness checks in deterministic backend logic, never through a prompt-only rule.**
+- **Keep mock/demo responses distinct from live provider output.**
+- **Describe only verified features as implemented.**
 
 ---
 
-## Code Policy and the Hint Ladder
+## Intended Learning Journey
 
-The code assistance gate (`app/policy/code_gate.py`) is entirely deterministic and **LLM-free**. It governs what code assistance can be exposed based on learner readiness:
+1. **Developer goal and skill context**
+2. **Intent classification and learning plan**
+3. **Research and source discovery**
+4. **Evidence review**
+5. **Concept explanation and mapping**
+6. **Guided project work**
+7. **Understanding check**
+8. **Code assistance gate**
+9. **Progress and reflection**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       THE HINT LADDER                       │
-├─────────────────┬───────────────────────────────────────────┤
-│ 1. EXPLAIN      │ Default level. Conceptual guidance,       │
-│                 │ trade-offs, and architecture. Zero code.  │
-├─────────────────┼───────────────────────────────────────────┤
-│ 2. SNIPPET      │ Maximum 15 lines of code. Covers exactly   │
-│                 │ one concept. Non-runnable. Max 3 snippets.│
-├─────────────────┼───────────────────────────────────────────┤
-│ 3. REQUIRE_CHECK│ Returned when full code is requested but  │
-│                 │ learner readiness is not yet unlocked.    │
-├─────────────────┼───────────────────────────────────────────┤
-│ 4. FULL         │ Complete, runnable implementation with    │
-│                 │ line-by-line pedagogical breakdown.       │
-└─────────────────┴───────────────────────────────────────────┘
+*These are intended product stages, not a claim that all nine are currently integrated.*
+
+---
+
+## Intended Architecture
+
+```text
+React + TypeScript frontend
+           │
+           │  HTTP / JSON
+           ▼
+    FastAPI backend
+    ├── Request validation and API routes
+    ├── Task-based model/provider routing
+    ├── Research and learning workflow
+    └── Deterministic code-readiness policy
+           │
+           ├── OpenAI-compatible hosted chat providers (Groq)
+           ├── Fallback hosted chat provider (Cerebras)
+           ├── Google Gemini for selected research tasks
+           ├── Optional local Ollama model
+           └── PostgreSQL + pgvector where required
 ```
 
-- **`EXPLAIN`**: Default response. No code blocks are permitted; only architectural explanations and concept relationships.
-- **`SNIPPET`**: Allowed when requested or deemed pedagogically beneficial. Strict bounds:
-  - At most **15 lines** of code.
-  - Demonstrates exactly **one concept**.
-  - Never a complete runnable application or boilerplate entrypoint (no `if __name__ == '__main__':` or full server wiring).
-  - Maximum 3 snippets per milestone response.
-- **`REQUIRE_CHECK`**: If full code is requested before readiness criteria are met, the gate rejects the request and returns `REQUIRE_CHECK` alongside comprehension questions.
-- **`FULL`**: Released only after readiness has been unlocked. Full code is always accompanied by line-by-line explanations.
+*The browser calls the backend; it must never call model providers directly with private credentials.*
 
 ---
 
-## How Readiness Is Decided
+## Provider Strategy
 
-Learner readiness is tracked per session in `app/policy/code_gate.py` and `app/policy/attempt_review.py`. Full code solutions are unlocked through any of three explicit paths:
+The planned provider layer uses a shared OpenAI-compatible client only for providers that support the relevant API format:
 
-1. **Understanding Check Passed**:
-   - The learner submits answers to the understanding questions generated in Stage 7 (`POST /api/learn/answers`).
-   - The learner must correctly answer at least `min_questions_answered` (default 2).
-   - **Deterministic Heuristic**: Answer evaluation does **not** rely on an arbitrary AI judge. It uses a deterministic keyword and token overlap heuristic, calculating whether the learner's answer covers at least 60% of the key concept points without requiring exact phrasing.
-2. **Reviewed Code Attempt**:
-   - The learner submits their own code attempt (`POST /api/learn/code/attempt`).
-   - Must contain substantive effort: at least **10 non-blank, non-comment lines of code**.
-   - Must parse cleanly as valid code (e.g. valid Python AST).
-   - Must reference core concept terms from the milestone.
-   - **Anti-Plagiarism Protection**: Normalized token similarity against DEVSCOUT's previously provided hints and snippets must be **under 80%** (the learner cannot copy and paste assistant hints back).
-3. **Final Build Submission**:
-   - The learner flags that their project milestone implementation is complete and submits it for final review.
+- **Groq**: candidate primary hosted chat provider.
+- **Cerebras**: candidate fallback, depending on account access and current quotas.
+- **Google AI Studio / Gemini**: selected research tasks to conserve usage.
+- **Ollama**: optional local inference fallback.
+
+Provider availability, model IDs, free-tier quotas, and supported parameters vary. OpenAI-compatible does not mean providers share quotas or support every identical feature. Use bounded retries, respect `Retry-After`, and do not repeatedly retry exhausted quotas, authentication failures, or invalid requests.
 
 ---
 
-## How Citations Are Checked & Confidence Scoring
+## API Status on Inspected Main
 
-### Verbatim Citation Checking
-In `app/pipeline/response_validator.py`, every claim in an explanation section must cite an existing resource ID and include a `supporting_quote`:
-- **Verbatim Text Match**: The quote **must appear verbatim in the fetched source text** (the scraped document or authoritative excerpt).
-- **Zero Hallucinated Citations**: If a quote does not appear in the source text, or cites a non-existent resource ID, the citation is dropped during deterministic response repair.
-- **Unsupported Status**: Any section claim that cannot be anchored directly to retrieved documentation is explicitly marked as `support_status = "unsupported"` and forbidden from displaying phantom citations.
+| Method and Route | Status on Inspected Main | Current Implementation Status (`learning-pivot`) |
+| :--- | :--- | :--- |
+| `GET /health` | **Implemented** | **Implemented** (checks Gemini & uptime) |
+| `GET /api/models` | Not registered | **Implemented & Verified** (Groq, Cerebras, Gemini, Ollama) |
+| `POST /api/chat` | Not registered | **Implemented & Verified** (multi-provider with failover) |
+| `POST /api/learn` | Not registered | **Implemented & Verified** (background job dispatch) |
+| `GET /api/learn/{job_id}` | Not registered | **Implemented & Verified** (job status & results polling) |
+| `POST /api/code-request` | Not registered | **Implemented & Verified** (deterministic code gate) |
+| `GET /api/quota` | Not registered | **Implemented & Verified** (rate gate usage tracking) |
 
-### Confidence Score Composition
-The overall `confidence_score` (between `0.0` and `1.0`) is computed deterministically from:
-1. **Source Authority**: Presence of official documentation and primary technical repositories.
-2. **Domain Diversity**: Requirement of at least two distinct authoritative domains.
-3. **Source Type Diversity**: Combination of official guides, code repositories, and technical discussions.
-4. **Time-Decay Freshness**: Penalties applied to outdated materials.
-5. **Quote Grounding Ratio**: Proportion of sections backed by verbatim quotes checked against the source text.
-
-If the confidence score falls below `0.65`, a `LOW_CONFIDENCE` or `NO_RELIABLE_SOURCES` warning is attached to the response.
+*Keep this table aligned with the actual router and verified tests. Never use fake success responses to conceal unfinished routes.*
 
 ---
 
-## Quota, Model Registry, and Routing
+## Requirements
 
-DEVSCOUT incorporates a multi-tier model management system designed to operate reliably within strict API rate limits (e.g., Gemini free tier: 4 RPM, 18 requests/day).
+- Python 3.11+
+- Git
+- Optional: Docker Desktop / Docker Compose for database services
+- Optional: Ollama with a downloaded model
+- API keys for whichever hosted providers you actually configure
 
-### 1. Model Registry (`models.json`)
-Models are configured in `models.json` and validated at startup using Pydantic:
-- **Supported Providers**: `gemini`, `openai_compatible`.
-- **Security Rule**: `base_url` is operator-controlled configuration and must never come from a user request. HTTPS is enforced for remote endpoints (HTTP permitted solely for localhost endpoints).
-
-### 2. Per-Model Rate Gate (`app/llm/rate_gate.py`)
-- **Sliding-Window RPM Limiter**: Every model has an independent sliding window (default 4 RPM for Gemini) that queues requests asynchronously via `asyncio.sleep` rather than failing.
-- **Daily Budget Limit (RPD)**: Daily request counter persisted in `data/quota.json` (resets at midnight in UTC-8). If the daily budget is exhausted, it raises `LLMProviderError("Gemini daily budget reached")` immediately before dispatching the request.
-- **Local Models**: Local/self-hosted models are designated as unlimited.
-
-### 3. Dynamic Router & Fallback (`app/llm/router.py`)
-- Evaluates candidate models by priority and available daily budget.
-- If a primary model encounters rate limits or daily quota exhaustion, the router automatically fails over to any configured secondary model.
-- Grounded web search is restricted to Gemini models with active budget.
-
-### 4. File-Based Caches
-- **Request Cache (`data/responses.json`)**: Normalizes request parameters (`goal`, `tech_stack`, `experience_level`) into a SHA-256 key, returning cached plans instantly on repeated requests.
-- **Research Cache (`data/research_cache.json`)**: Caches search queries and scraped web documents by normalized URL with a 24-hour TTL.
+Python dependencies are listed in [`requirements.txt`](requirements.txt).
 
 ---
 
-## Setup and Running
+## Run Locally
 
-### Prerequisites
-- Python 3.11 or 3.12
-- Google Gemini API key
-
-### 1. Clone & Create Virtual Environment
+### 1. Clone and Install
 
 ```bash
 git clone https://github.com/notujjwal-kiet/DEVSCOUT-V2.git
 cd DEVSCOUT-V2
-
-# Create virtual environment
 python -m venv .venv
-
-# Activate on Windows:
-.\.venv\Scripts\Activate.ps1
-
-# Activate on macOS / Linux:
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
 ```
 
-### 2. Configure Environment (`.env`)
+**Windows PowerShell:**
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
 
-Copy `.env.example` to `.env`:
-
+**macOS/Linux:**
 ```bash
+source .venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set your configuration values:
+### 2. Configure Environment
+
+Edit `.env` for the features you intend to run. Example provider variable names for the planned integration:
 
 ```env
-APP_ENV=development
-APP_HOST=0.0.0.0
-APP_PORT=8000
-
-# Primary LLM provider
-LLM_PROVIDER=gemini
-
-# Google Gemini API Key
-GEMINI_API_KEY=your_gemini_api_key_here
+GROQ_API_KEY=
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=llama-3.3-70b-versatile
+CEREBRAS_API_KEY=
+CEREBRAS_BASE_URL=https://api.cerebras.ai/v1
+CEREBRAS_MODEL=llama3.1-8b
+GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
-GEMINI_RPM=4
-GEMINI_RPD_LIMIT=18
+OLLAMA_ENABLED=false
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=llama3.2
 ```
 
-### 3. Start the Backend Server
+These variables have no effect until the application reads them. Never commit `.env`, hardcode credentials, log keys, or put provider secrets in frontend `VITE_*` variables.
+
+### 3. Start the API
 
 ```bash
-python -m uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The interactive API documentation is accessible at `http://localhost:8000/docs`.
+- Health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) or [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
+- Interactive API documentation: available at `/docs` in development if enabled by app configuration.
 
-### 4. Running the Diagnostic Script
-
-To verify that model generation, rate gating, and grounded discovery work properly in your environment:
+### 4. Run Tests
 
 ```bash
-python scripts/diag.py
+pytest -v
 ```
 
-### 5. Frontend Setup
-
-The companion UI repository is available at:
-👉 **[DEVSCOUT-V2 Frontend Repository](https://github.com/notujjwal-kiet/DEVSCOUT-V2-FRONTEND)**
-
-In the frontend directory, set up `.env`:
-
-```env
-VITE_API_BASE_URL=http://localhost:8000
-```
-
-Install packages and run:
-
-```bash
-npm install
-npm run dev
-```
+*Report tests as passing only after running them in the current environment.*
 
 ---
 
-## Running Tests
+## Priorities
 
-The test suite contains 247 comprehensive tests covering pipeline stages, code gate enforcement, citation checks, rate limiting, and model routing. Every test executes against temporary paths with zero modifications to the project's `data/` directory and zero live network calls.
-
-```bash
-# Run full suite
-pytest
-
-# Run with duration profiling
-pytest --durations=15
-```
-
-The entire suite executes in approximately **5.5 seconds**.
+1. Implement and test provider registry and bounded fallback.
+2. Align registered API endpoints with the frontend contract.
+3. Complete one end-to-end learning journey with real source attribution.
+4. Enforce the code-readiness gate server-side.
+5. Add usage/quota visibility and persistence where required by the demo.
 
 ---
 
-## Honest Limitations
+## Security and Reliability
 
-1. **In-Memory Session & Job Store**: Active learning sessions, async jobs, and question state reside in server memory (with automatic TTL eviction and a 1,000-session cap). Restarting the backend server drops in-flight interactive sessions (persisted disk caches and quotas remain intact).
-2. **Deterministic Heuristic Answer Checking**: Understanding question evaluation uses keyword and token overlap heuristics rather than subjective AI grading or human review.
-3. **Free-Tier Gemini Quotas**: Default limits of 4 RPM and 18 requests per day require requests to queue asynchronously when limits are reached.
-4. **No Multi-User Authentication**: Intended for individual developer local setups or controlled private deployments. Bearer token protection acts as a shared API key rather than full user account isolation.
+- Keep provider keys server-side and out of logs.
+- Validate requests and use bounded network timeouts.
+- Configure CORS for the intended deployment origins.
+- Treat free-tier limits and provider availability as variable.
+- Separate mock data from live responses.
+- Do not describe placeholders or untested paths as complete.
 
 ---
 
-## Roadmap
+## Related Repository
 
-- [ ] **Persistent Database Layer**: SQLite and PostgreSQL adapters to preserve learner session state, milestone notes, and reflections across server restarts.
-- [ ] **Interactive Socratic Dialogue**: Multi-turn milestone conversation interface for asking clarifying questions while coding.
-- [ ] **Sandboxed Code Execution**: Docker / WebAssembly runner to execute and validate unit tests written by learners directly inside the companion UI.
-- [ ] **Expanded Local Models**: Fine-tuned small language models for zero-quota, completely offline technical mentoring.
+Frontend: [NotUjjwal-95/Devscout-UI](https://github.com/NotUjjwal-95/Devscout-UI)

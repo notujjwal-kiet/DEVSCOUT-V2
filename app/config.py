@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="gemini")
     gemini_api_key: str | None = Field(default=None)
     gemini_model: str = Field(default="gemini-2.5-flash")
+    gemini_base_url: str | None = Field(default=None)
     gemini_timeout_seconds: float = Field(default=60.0, ge=1.0)
     gemini_timeout: float = Field(default=60.0, ge=1.0)
     gemini_rpm: int = Field(default=4, ge=1)
@@ -40,6 +41,23 @@ class Settings(BaseSettings):
     gemini_quota_file: str = Field(default="data/quota.json")
     request_cache_file: str = Field(default="data/responses.json")
     gemini_thinking_budget: int = Field(default=0, ge=0)
+
+    # ── Multi-Provider AI Layer (Groq, Cerebras, Ollama) ──────────
+    groq_api_key: str | None = Field(default=None)
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
+    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_timeout_seconds: float = Field(default=30.0, ge=1.0)
+
+    cerebras_api_key: str | None = Field(default=None)
+    cerebras_base_url: str = Field(default="https://api.cerebras.ai/v1")
+    cerebras_model: str = Field(default="llama3.1-8b")
+    cerebras_timeout_seconds: float = Field(default=30.0, ge=1.0)
+
+    ollama_base_url: str = Field(default="http://localhost:11434/v1")
+    ollama_model: str = Field(default="llama3.2")
+    ollama_enabled: bool = Field(default=False)
+    ollama_timeout_seconds: float = Field(default=60.0, ge=1.0)
+
     model_pricing_per_1m: dict[str, dict[str, float]] = Field(
         default_factory=lambda: {
             "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
@@ -47,8 +65,12 @@ class Settings(BaseSettings):
             "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
             "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
             "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
+            "llama-3.3-70b-versatile": {"input": 0.05, "output": 0.08},
+            "llama3.1-8b": {"input": 0.10, "output": 0.10},
+            "llama3.2": {"input": 0.0, "output": 0.0},
         }
     )
+
 
     # ── Seed Documentation Fallback ──────────────────────────────
     seed_docs: dict[str, str] = Field(
@@ -111,7 +133,12 @@ class Settings(BaseSettings):
 
     # ── CORS ──────────────────────────────────────────────────────
     cors_origins: list[str] = Field(
-        default=["http://localhost:5173", "http://localhost:3000"]
+        default=[
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ]
     )
 
     @field_validator("cors_origins", mode="before")
@@ -121,7 +148,12 @@ class Settings(BaseSettings):
             return [orig.strip() for orig in v.split(",") if orig.strip()]
         if isinstance(v, list):
             return [str(orig).strip() for orig in v if str(orig).strip()]
-        return ["http://localhost:5173", "http://localhost:3000"]
+        return [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ]
 
     @field_validator("log_level")
     @classmethod
