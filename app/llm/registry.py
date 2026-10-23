@@ -42,6 +42,8 @@ def resolve_model_name(val: str, provider: str) -> str:
                 return str(cfg_val)
         except Exception:
             pass
+        if provider == "openai_compatible":
+            return "openai/gpt-oss-120b"
         return "gemini-2.5-flash"
     return raw
 
@@ -130,7 +132,13 @@ class ModelRegistry:
                 self._models[m.id] = m
 
     def get_model(self, model_id: str) -> ModelEntry | None:
-        return self._models.get(model_id)
+        if model_id in self._models:
+            return self._models[model_id]
+        clean_id = model_id.lower().strip()
+        for m in self._models.values():
+            if m.id.lower() == clean_id or m.id.lower().startswith(f"{clean_id}-") or m.provider == clean_id:
+                return m
+        return None
 
     def has_model(self, model_id: str) -> bool:
         return model_id in self._models
@@ -167,9 +175,9 @@ def load_model_registry(file_path: str = MODELS_FILE_DEFAULT) -> ModelRegistry:
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Strip C-style /* ... */ and // comments for example/annotated JSON files
+    # Strip C-style /* ... */ and // comments for example/annotated JSON files (avoid stripping https://)
     clean_json = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    clean_json = re.sub(r"//.*$", "", clean_json, flags=re.MULTILINE)
+    clean_json = re.sub(r"^\s*//.*$", "", clean_json, flags=re.MULTILINE)
     raw = json.loads(clean_json)
 
     entries_raw = raw if isinstance(raw, list) else raw.get("models", list(raw.values()))
@@ -205,7 +213,22 @@ def is_model_available(entry: ModelEntry) -> bool:
             return True
         if not entry.api_key_env:
             return False
-        return bool(os.getenv(entry.api_key_env, "").strip())
+        key = os.getenv(entry.api_key_env, "").strip()
+        if not key:
+            return False
+        # Do not mark the provider available based only on key presence.
+        try:
+            from app.providers.registry import get_provider_registry
+            prov_reg = get_provider_registry()
+            for prov_name in ("groq", "cerebras", "ollama"):
+                if prov_name in entry.id.lower() or prov_name in (entry.api_key_env or "").lower():
+                    prov = prov_reg.get_provider(prov_name)
+                    if prov and not prov.is_available():
+                        return False
+                    break
+        except Exception:
+            pass
+        return True
 
     if entry.provider == "gemini":
         if not entry.local:
@@ -218,16 +241,22 @@ def is_model_available(entry: ModelEntry) -> bool:
     return False
 
 
-def get_model_registry() -> ModelRegistry:
+_registry: ModelRegistry | None = None
+_custom_registry: bool = False
+
+
+def get_model_registry(reload: bool = False) -> ModelRegistry:
     """Return singleton ModelRegistry instance, loading models.json if needed."""
-    global _registry
-    if _registry is None:
+    global _registry, _custom_registry
+    if _registry is None or (reload and not _custom_registry):
         _registry = load_model_registry()
     return _registry
 
 
 def set_model_registry(registry: ModelRegistry | None) -> None:
     """Override singleton ModelRegistry (used in unit tests)."""
-    global _registry
+    global _registry, _custom_registry
     _registry = registry
+    _custom_registry = registry is not None
+
 

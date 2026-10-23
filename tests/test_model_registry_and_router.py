@@ -356,3 +356,92 @@ async def test_transparency_models_used_and_fallback_warning():
         m.model_id and m.model_id != first_choice_model_id for m in metrics
     )
     assert fallback_model_used is True
+
+
+# ── Test 9: Acceptance of registered model IDs in LearnRequest ───────────────
+
+def test_registered_model_ids_accepted_in_learn_request():
+    """Verify both gemini-main and groq-openai/gpt-oss-120b are accepted."""
+    req_gemini = LearnRequest(goal="Learn FastAPI testing", model_id="gemini-main")
+    assert req_gemini.model_id == "gemini-main"
+
+    req_groq = LearnRequest(goal="Learn FastAPI testing", model_id="groq-openai/gpt-oss-120b")
+    assert req_groq.model_id == "groq-openai/gpt-oss-120b"
+
+    # Default is None (auto -> gemini-main)
+    req_default = LearnRequest(goal="Learn FastAPI testing")
+    assert req_default.model_id is None
+
+
+def test_invalid_groq_variant_rejected():
+    """Verify slightly misspelled or unconfigured model variants are rejected with 422."""
+    with pytest.raises(Exception) as exc_info:
+        LearnRequest(goal="Learn FastAPI testing", model_id="groq-llama-3.3-70b-versatile")
+    assert "Unknown model_id" in str(exc_info.value)
+
+
+# ── Test 10: POST /api/learn accepts valid model_id and rejects invalid ──────
+
+def test_post_api_learn_accepts_groq_model_id(clean_rate_gate):
+    """POST /api/learn with 'groq-openai/gpt-oss-120b' returns HTTP 202."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/learn",
+        json={
+            "goal": "Build a test app",
+            "model_id": "groq-openai/gpt-oss-120b",
+        },
+    )
+    assert resp.status_code == 202
+    data = resp.json()
+    assert "job_id" in data
+    assert data["status"] == "pending"
+
+
+def test_post_api_learn_rejects_unknown_model_id():
+    """POST /api/learn with unknown model_id returns HTTP 422 with available models list."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/learn",
+        json={
+            "goal": "Build a test app",
+            "model_id": "unknown-model-xyz",
+        },
+    )
+    assert resp.status_code == 422
+    data = resp.json()
+    detail = str(data["detail"])
+    assert "Unknown model_id 'unknown-model-xyz'" in detail
+    assert "gemini-main" in detail
+    assert "groq-openai/gpt-oss-120b" in detail
+
+
+# ── Test 11: GET /api/models returns registered models with expected IDs ─────
+
+def test_api_models_lists_registered_models(clean_rate_gate):
+    """GET /api/models includes both registered models without hardcoded secrets."""
+    client = TestClient(app)
+    resp = client.get("/api/models")
+    assert resp.status_code == 200
+    models = resp.json()
+    model_ids = [m["id"] for m in models]
+
+    assert "gemini-main" in model_ids
+    assert "groq-openai/gpt-oss-120b" in model_ids
+
+    groq_meta = next(m for m in models if m["id"] == "groq-openai/gpt-oss-120b")
+    assert groq_meta["provider"] in ("groq", "openai_compatible")
+    assert groq_meta["label"] == "Groq (openai/gpt-oss-120b)"
+    assert isinstance(groq_meta["available"], bool)
+
+
+# ── Test 12: Router resolves groq-openai/gpt-oss-120b correctly ──────────────
+
+@pytest.mark.asyncio
+async def test_router_resolves_groq_model():
+    """get_provider_for('groq-openai/gpt-oss-120b') returns an OpenAICompatibleProvider targeting Groq."""
+    routed = await get_provider_for(stage=2, requested_id="groq-openai/gpt-oss-120b")
+    assert routed.active_entry.id == "groq-openai/gpt-oss-120b"
+    assert routed.active_entry.model == "openai/gpt-oss-120b"
+    assert routed.active_entry.provider == "openai_compatible"
+

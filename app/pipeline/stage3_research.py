@@ -192,7 +192,19 @@ async def run(
 
     from app.llm.router import can_run_grounded_search
 
-    grounded_allowed = can_run_grounded_search(provider)
+    search_provider = provider
+    grounded_allowed = can_run_grounded_search(search_provider)
+    if not grounded_allowed:
+        try:
+            from app.llm.router import get_provider_for
+
+            gemini_cand = await get_provider_for(stage="discovery", requested_id="gemini-main")
+            if can_run_grounded_search(gemini_cand):
+                search_provider = gemini_cand
+                grounded_allowed = True
+        except Exception:
+            pass
+
     allow_gh_queries = (
         enable_github_queries
         if enable_github_queries is not None
@@ -260,7 +272,7 @@ async def run(
                     discovered = await discover_sources(
                         query=q,
                         max_results=8,
-                        provider=provider,  # type: ignore[arg-type]
+                        provider=search_provider,  # type: ignore[arg-type]
                         http_client=active_client,
                     )
                     candidates: list[_CandidateSource] = []
@@ -302,14 +314,9 @@ async def run(
             nonlocal rate_limited_searches
             async with discovery_sem:
                 try:
-                    if context_prefix or lang:
-                        gh_q = f"{context_prefix} {topic} examples".strip()
-                        if lang:
-                            gh_q += f" language:{lang}"
-                        gh_q += " stars:>50"
-                    else:
-                        gh_q = f"{topic} examples"
+                    from app.research.github import build_github_query
 
+                    gh_q = build_github_query(topic=topic, lang=lang, stars_min=0)
                     gh_docs = await gh.search_repositories(
                         query=gh_q,
                         limit=3,
@@ -345,9 +352,16 @@ async def run(
         # 2. Schedule discovery and GitHub queries bounded by max_searches_per_run
         max_searches = cfg.max_searches_per_run
         all_tasks = []
-        for q, rtype, topic in discovery_queries:
-            if len(all_tasks) < max_searches:
-                all_tasks.append(_run_discover(q, rtype, topic))
+        if grounded_allowed:
+            for q, rtype, topic in discovery_queries:
+                if len(all_tasks) < max_searches:
+                    all_tasks.append(_run_discover(q, rtype, topic))
+        else:
+            logger.info(
+                "stage3_grounded_search_unavailable",
+                reason="Grounded search requires Gemini with available quota. Groq and other providers are inference-only and cannot perform web grounding. Falling back to GitHub and direct documentation retrieval.",
+            )
+
         if allow_gh_queries:
             for topic in topics:
                 if len(all_tasks) < max_searches:

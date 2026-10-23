@@ -177,8 +177,14 @@ async def list_models() -> list[dict[str, object]]:
     from app.llm.rate_gate import get_rate_gate
     from app.providers.registry import get_provider_registry
 
-    reg = get_model_registry()
+    reg = get_model_registry(reload=True)
     gate = get_rate_gate()
+
+    prov_reg = None
+    try:
+        prov_reg = get_provider_registry()
+    except Exception:
+        pass
 
     res: list[dict[str, object]] = []
     seen_ids: set[str] = set()
@@ -187,12 +193,28 @@ async def list_models() -> list[dict[str, object]]:
         used = gate._get_used_today(m.id) if not m.local else 0
         limit = m.rpd
         available = is_model_available(m)
+        status = None
+        status_detail = None
+
+        provider_name = m.provider
+        if prov_reg:
+            for prov_name in ("groq", "cerebras", "ollama"):
+                if prov_name in m.id.lower() or m.provider == prov_name:
+                    provider_name = prov_name
+                    p = prov_reg.get_provider(prov_name)
+                    if p:
+                        if not p.is_available():
+                            available = False
+                        status = getattr(p, "diagnostic_status", None)
+                        status_detail = getattr(p, "diagnostic_detail", None)
+                    break
+
         seen_ids.add(m.id)
 
-        res.append({
+        item: dict[str, object] = {
             "id": m.id,
             "label": m.label,
-            "provider": m.provider,
+            "provider": provider_name,
             "local": m.local,
             "tier": m.tier,
             "available": available,
@@ -200,17 +222,22 @@ async def list_models() -> list[dict[str, object]]:
             "limit_today": limit,
             "price_in_per_1m": m.price_in_per_1m,
             "price_out_per_1m": m.price_out_per_1m,
-        })
+        }
+        if status:
+            item["status"] = status
+        if status_detail:
+            item["status_detail"] = status_detail
+        res.append(item)
 
-    # Include multi-provider registry models (Groq, Cerebras, Ollama)
-    try:
-        prov_reg = get_provider_registry()
-        for info in prov_reg.get_all_models_info():
-            if info["id"] not in seen_ids and info.get("provider") != "gemini":
-                seen_ids.add(info["id"])
-                res.append(info)
-    except Exception:
-        pass
+    # Include multi-provider registry models (Groq, Cerebras, Ollama) if not in models.json
+    if prov_reg:
+        try:
+            for info in prov_reg.get_all_models_info():
+                if info["id"] not in seen_ids and info.get("provider") != "gemini":
+                    seen_ids.add(info["id"])
+                    res.append(info)
+        except Exception:
+            pass
 
     return res
 

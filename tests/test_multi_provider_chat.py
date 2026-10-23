@@ -51,7 +51,7 @@ async def test_openai_compatible_success():
     provider = OpenAICompatibleProvider(
         name="groq",
         base_url="https://api.groq.com/openai/v1",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         api_key="gsk-test-key",
         timeout_seconds=5.0,
     )
@@ -82,7 +82,7 @@ async def test_openai_compatible_success():
 
         assert isinstance(res, ChatResponse)
         assert res.provider == "groq"
-        assert res.model == "llama-3.3-70b-versatile"
+        assert res.model == "openai/gpt-oss-120b"
         assert res.content == "Async in Python uses an event loop."
         assert res.finish_reason == "stop"
         assert res.research_backed is False
@@ -322,7 +322,7 @@ def test_api_chat_endpoint(test_client):
     mock_response = ChatResponse(
         content="FastAPI is a modern Python framework.",
         provider="groq",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         task="explain",
         research_backed=False,
         finish_reason="stop",
@@ -342,7 +342,7 @@ def test_api_chat_endpoint(test_client):
         data = resp.json()
         assert data["content"] == "FastAPI is a modern Python framework."
         assert data["provider"] == "groq"
-        assert data["model"] == "llama-3.3-70b-versatile"
+        assert data["model"] == "openai/gpt-oss-120b"
         assert data["task"] == "explain"
         assert data["research_backed"] is False
 
@@ -395,3 +395,95 @@ def test_openapi_schema_has_chat_and_models_endpoints(test_client):
 
     assert "/api/health" in paths
     assert "get" in paths["/api/health"]
+
+
+# ── Test 12: Diagnostic Categories (Config, Auth, Model Access, Quota, Ready) ──
+
+
+@pytest.mark.asyncio
+async def test_diagnose_provider_categories():
+    # 1. Missing configuration
+    unconf = OpenAICompatibleProvider(
+        name="groq", base_url="https://api.groq.com/openai/v1", model="test-m", api_key=None
+    )
+    ok, cat = await unconf.verify_availability()
+    assert ok is False
+    assert cat == "configuration"
+
+    # 2. Authentication failure (401)
+    auth_fail = OpenAICompatibleProvider(
+        name="groq", base_url="https://api.groq.com/openai/v1", model="test-m", api_key="bad-key"
+    )
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = httpx.Response(
+            401, json={"error": {"message": "Invalid key"}}, request=httpx.Request("GET", "https://api.groq.com/openai/v1/models")
+        )
+        ok, cat = await auth_fail.verify_availability()
+        assert ok is False
+        assert cat == "authentication"
+
+    # 3. Model access failure (model not in account models list)
+    model_fail = OpenAICompatibleProvider(
+        name="groq", base_url="https://api.groq.com/openai/v1", model="llama-3.3-70b-versatile", api_key="good-key"
+    )
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = httpx.Response(
+            200,
+            json={"data": [{"id": "openai/gpt-oss-120b"}, {"id": "qwen/qwen3.8-27b"}]},
+            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
+        )
+        ok, cat = await model_fail.verify_availability()
+        assert ok is False
+        assert cat == "model_access"
+
+    # 4. Quota exhaustion (429)
+    quota_fail = OpenAICompatibleProvider(
+        name="groq", base_url="https://api.groq.com/openai/v1", model="openai/gpt-oss-120b", api_key="good-key"
+    )
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = httpx.Response(
+            429, json={"error": {"message": "Rate limit"}}, request=httpx.Request("GET", "https://api.groq.com/openai/v1/models")
+        )
+        ok, cat = await quota_fail.verify_availability()
+        assert ok is False
+        assert cat == "quota"
+
+    # 5. Verified and ready (200 with model match)
+    ready_prov = OpenAICompatibleProvider(
+        name="groq", base_url="https://api.groq.com/openai/v1", model="openai/gpt-oss-120b", api_key="good-key"
+    )
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = httpx.Response(
+            200,
+            json={"data": [{"id": "openai/gpt-oss-120b"}]},
+            request=httpx.Request("GET", "https://api.groq.com/openai/v1/models"),
+        )
+        ok, cat = await ready_prov.verify_availability()
+        assert ok is True
+        assert cat == "ready"
+
+
+# ── Test 13: Complex Groq Usage Payload with Floats and Dicts ─────────────────
+
+
+def test_groq_complex_usage_payload():
+    groq_usage = {
+        "queue_time": 0.213288585,
+        "prompt_tokens": 78,
+        "prompt_time": 0.003352783,
+        "completion_tokens": 49,
+        "completion_time": 0.127140876,
+        "total_tokens": 127,
+        "total_time": 0.130493659,
+        "completion_tokens_details": {"reasoning_tokens": 49},
+    }
+    resp = ChatResponse(
+        content="GROQ LIVE",
+        provider="groq",
+        model="openai/gpt-oss-120b",
+        task="chat",
+        usage=groq_usage,
+    )
+    assert resp.usage["queue_time"] == 0.213288585
+    assert resp.usage["completion_tokens_details"]["reasoning_tokens"] == 49
+

@@ -32,7 +32,7 @@ class ChatResponse(BaseModel):
         description="True only if verified research/grounding evidence was utilized",
     )
     finish_reason: str | None = Field(default=None, description="Reason generation finished")
-    usage: dict[str, int] | None = Field(
+    usage: dict[str, Any] | None = Field(
         default=None, description="Token usage statistics if provided by provider"
     )
 

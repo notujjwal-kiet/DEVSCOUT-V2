@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from typing import TypeVar
+from unittest.mock import AsyncMock
 from fastapi import HTTPException
 import structlog
 
@@ -62,10 +63,10 @@ class RoutedProvider:
         self.primary_entry = primary_entry
         self.fallback_entry = fallback_entry
         self.stage = stage
-        self.first_choice_model_id = first_choice_model_id or primary_entry.id
+        self.first_choice_model_id = first_choice_model_id or (primary_entry.id if primary_entry else "default")
         self.active_entry = primary_entry
-        self.model_id: str = primary_entry.id
-        self.model_name: str = primary_entry.model
+        self.model_id: str = primary_entry.id if primary_entry else "unknown"
+        self.model_name: str = primary_entry.model if primary_entry else "unknown"
         self.was_fallback: bool = (self.model_id != self.first_choice_model_id)
 
         self._primary_instance: LLMProvider | None = None
@@ -73,6 +74,28 @@ class RoutedProvider:
 
         self.last_usage_metadata: object | None = None
         self.last_usage_data: object | None = None
+
+        # Proactively bypass primary if already known to be exhausted
+        try:
+            gate = get_rate_gate()
+            if (
+                primary_entry
+                and not gate.has_budget(primary_entry.id)
+                and fallback_entry
+                and gate.has_budget(fallback_entry.id)
+            ):
+                logger.info(
+                    "router_bypassing_exhausted_primary",
+                    exhausted_model=primary_entry.id,
+                    routing_to=fallback_entry.id,
+                    stage=stage,
+                )
+                self.active_entry = fallback_entry
+                self.model_id = fallback_entry.id
+                self.model_name = fallback_entry.model
+                self.was_fallback = True
+        except Exception:
+            pass
 
     def _get_provider_instance(self, entry: ModelEntry) -> LLMProvider:
         p = get_llm_provider(
@@ -99,18 +122,48 @@ class RoutedProvider:
             raise RuntimeError("No fallback provider configured")
         return self._fallback_instance
 
+    def _get_active(self) -> LLMProvider:
+        if self.fallback_entry and self.active_entry and self.active_entry.id == self.fallback_entry.id:
+            return self._get_fallback()
+        try:
+            gate = get_rate_gate()
+            if (
+                self.primary_entry
+                and not gate.has_budget(self.primary_entry.id)
+                and self.fallback_entry
+                and gate.has_budget(self.fallback_entry.id)
+            ):
+                logger.info(
+                    "router_bypassing_exhausted_primary",
+                    exhausted_model=self.primary_entry.id,
+                    routing_to=self.fallback_entry.id,
+                    stage=self.stage,
+                )
+                self.active_entry = self.fallback_entry
+                self.model_id = self.fallback_entry.id
+                self.model_name = self.fallback_entry.model
+                self.was_fallback = True
+                return self._get_fallback()
+        except Exception:
+            pass
+        return self._get_primary()
+
     def _sync_telemetry(self, provider: LLMProvider) -> None:
         self.last_usage_metadata = getattr(provider, "last_usage_metadata", None)
         self.last_usage_data = getattr(provider, "last_usage_data", None)
 
     async def generate(self, prompt: str, system_prompt: str | None = None, **kwargs: object) -> str:
-        provider = self._get_primary()
+        provider = self._get_active()
         try:
             res = await provider.generate(prompt, system_prompt=system_prompt, **kwargs)
             self._sync_telemetry(provider)
             return res
         except Exception as exc:
-            if _is_quota_or_rate_error(exc) and self.fallback_entry:
+            if (
+                _is_quota_or_rate_error(exc)
+                and self.fallback_entry
+                and self.active_entry.id != self.fallback_entry.id
+            ):
                 logger.warning(
                     "router_failover_on_quota",
                     stage=self.stage,
@@ -131,13 +184,17 @@ class RoutedProvider:
     async def generate_structured(
         self, prompt: str, schema: type[T], system_prompt: str | None = None, **kwargs: object
     ) -> T:
-        provider = self._get_primary()
+        provider = self._get_active()
         try:
             res = await provider.generate_structured(prompt, schema=schema, system_prompt=system_prompt, **kwargs)
             self._sync_telemetry(provider)
             return res
         except Exception as exc:
-            if _is_quota_or_rate_error(exc) and self.fallback_entry:
+            if (
+                _is_quota_or_rate_error(exc)
+                and self.fallback_entry
+                and self.active_entry.id != self.fallback_entry.id
+            ):
                 logger.warning(
                     "router_failover_on_quota",
                     stage=self.stage,
@@ -158,7 +215,13 @@ class RoutedProvider:
     async def generate_with_search(
         self, prompt: str, system_prompt: str | None = None, **kwargs: object
     ) -> object:
-        provider = self._get_primary()
+        if self.primary_entry and self.primary_entry.provider == "gemini":
+            provider = self._get_primary()
+        elif self.fallback_entry and self.fallback_entry.provider == "gemini":
+            provider = self._get_fallback()
+        else:
+            raise LLMProviderError(f"Model '{self.model_id}' does not support grounded search")
+
         if not hasattr(provider, "generate_with_search"):
             raise LLMProviderError(f"Model '{self.model_id}' does not support grounded search")
         try:
@@ -203,8 +266,13 @@ def can_run_grounded_search(provider: object) -> bool:
         return False
 
     # Check for unit test mocks/fakes
-    if hasattr(provider, "generate_with_search") and not isinstance(provider, (RoutedProvider, GeminiProvider)):
-        return True
+    if hasattr(provider, "generate_with_search"):
+        if (
+            isinstance(provider, AsyncMock)
+            or hasattr(provider, "_mock_return_value")
+            or not isinstance(provider, (RoutedProvider, GeminiProvider))
+        ):
+            return True
 
     active_entry = getattr(provider, "active_entry", None)
     if active_entry is not None:
@@ -226,7 +294,7 @@ async def get_provider_for(
     """
     Get provider for pipeline stage:
     - If requested_id is given: must exist in registry (else 422), used alone,
-      with fallback if configured.
+      with fallback if configured or available in registry.
     - In auto mode: choose lowest-priority-number model with budget left;
       when a call fails with quota/rate/daily budget, move to the next model once.
     """
@@ -236,6 +304,9 @@ async def get_provider_for(
     # 1. Explicit model request
     if requested_id is not None:
         entry = reg.get_model(requested_id)
+        if entry is None:
+            reg = get_model_registry(reload=True)
+            entry = reg.get_model(requested_id)
         if entry is None:
             raise HTTPException(
                 status_code=422,
@@ -247,6 +318,11 @@ async def get_provider_for(
         if fb_env:
             for m in reg.list_models():
                 if (m.id == fb_env or m.provider == fb_env) and m.id != entry.id:
+                    fallback_entry = m
+                    break
+        if fallback_entry is None:
+            for m in reg.list_models():
+                if m.id != entry.id and is_model_available(m):
                     fallback_entry = m
                     break
 

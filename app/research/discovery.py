@@ -15,6 +15,7 @@ import httpx
 import structlog
 
 from app.llm.provider import RateLimitError
+from app.llm.router import can_run_grounded_search
 from app.models.pipeline import ResourceType
 from app.research.cache import ResearchCache, get_research_cache
 from app.research.models import DiscoveredSource
@@ -124,19 +125,24 @@ async def discover_sources(
             return list(cached_result[:max_results])
 
     if provider is None:
-        from app.llm.router import get_provider_for
+        try:
+            from app.llm.router import get_provider_for
 
-        provider = await get_provider_for(stage="discovery")
-
-    from app.llm.router import can_run_grounded_search
+            gemini_cand = await get_provider_for(stage="discovery", requested_id="gemini-main")
+            if can_run_grounded_search(gemini_cand):
+                provider = gemini_cand
+        except Exception:
+            pass
 
     if not can_run_grounded_search(provider):
         logger.info(
             "grounded_search_skipped_no_budget_or_non_gemini",
             query=query.strip(),
             model_id=getattr(provider, "model_id", None),
+            reason="Grounded search requires Gemini with available quota. Groq and other providers are inference-only and cannot perform web grounding.",
         )
         return []
+
 
     search_prompt = f"Search documentation, repositories, articles, and discussions for: {query.strip()}"
     try:

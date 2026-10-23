@@ -128,6 +128,36 @@ class SessionNotFoundError(Exception):
         self.response_id = response_id
 
 
+def _fallback_plan_result(
+    goal_context: object,
+    depth_level: str = "intermediate",
+) -> IntentPlanResult:
+    """Create a graceful fallback learning plan if Stage 2 fails (e.g. all providers exhausted)."""
+    goal = getattr(goal_context, "goal", None)
+    goal_id = getattr(goal, "goal_id", "goal-fallback") if goal else "goal-fallback"
+    goal_title = getattr(goal, "title", "System Architecture") if goal else "System Architecture"
+    goal_desc = getattr(goal, "description", "") if goal else ""
+
+    milestone_title = goal_title.split(":")[0].strip() or "Core Foundations"
+    plan = LearningPlan(
+        goal_id=goal_id,
+        knowledge_gaps=[f"Foundations of {milestone_title}"],
+        learning_outcomes=[f"Understand and apply concepts of {milestone_title}"],
+        depth_level=depth_level,
+        milestones=[
+            Milestone(
+                title=milestone_title,
+                description=goal_desc or f"Learn the core architecture and principles of {milestone_title}",
+                target_outcome=f"Master {milestone_title} implementation and best practices",
+            )
+        ],
+    )
+    return IntentPlanResult(
+        goal_id=goal_id,
+        plan=plan,
+    )
+
+
 def _fallback_explanation_result(
     plan_result: IntentPlanResult,
     evidence_result: EvidenceReviewResult | None,
@@ -288,6 +318,15 @@ async def run_learning_pipeline(
             except Exception:
                 pass
 
+    # Resolve shared pipeline LLM provider if not explicitly injected
+    if provider is None:
+        from app.llm.router import get_provider_for
+
+        provider = await get_provider_for(
+            stage="pipeline",
+            requested_id=getattr(request, "model_id", None),
+        )
+
     # ── Stage 1: Developer Goal & Skill Context ───────────────────────────────
     logger.info("stage 1 start")
     _t1 = time.perf_counter()
@@ -317,12 +356,17 @@ async def run_learning_pipeline(
         if request.experience_level == ExperienceLevel.INTERMEDIATE
         else ("advanced" if request.experience_level == ExperienceLevel.ADVANCED else "beginner")
     )
-    stage2_result = await stage2_input_processing.run(
-        goal_context=stage1_result,
-        depth_level=depth,
-        provider=provider,
-        requested_model_id=getattr(request, "model_id", None),
-    )
+    try:
+        stage2_result = await stage2_input_processing.run(
+            goal_context=stage1_result,
+            depth_level=depth,
+            provider=provider,
+            requested_model_id=getattr(request, "model_id", None),
+        )
+    except Exception as exc:
+        logger.warning("stage2_failed_degrading_gracefully", error=str(exc))
+        stage2_result = _fallback_plan_result(stage1_result, depth)
+
     # Ensure server-generated plan_id and created_at exist
     if stage2_result.plan:
         if not getattr(stage2_result.plan, "plan_id", None):

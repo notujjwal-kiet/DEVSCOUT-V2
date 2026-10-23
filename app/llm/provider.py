@@ -91,10 +91,19 @@ class OpenAICompatibleProvider:
         self.last_usage_data: dict[str, object] | None = None
 
     def _get_api_key(self) -> str | None:
-        """Read API key from os.environ[api_key_env] at call time. Never log or include in errors."""
+        """Read API key from os.environ[api_key_env] or get_settings at call time. Never log or include in errors."""
         if not self.api_key_env:
             return None
         key = os.environ.get(self.api_key_env, "").strip()
+        if not key:
+            try:
+                from app.config import get_settings
+                cfg = get_settings()
+                cfg_key = getattr(cfg, self.api_key_env.lower(), None)
+                if cfg_key:
+                    key = str(cfg_key).strip()
+            except Exception:
+                pass
         if not key:
             raise LLMProviderError(
                 f"Authentication failed: environment variable '{self.api_key_env}' is not set."

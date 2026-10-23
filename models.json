@@ -9,5 +9,20 @@
     "rpd": 20,
     "tier": "stable",
     "priority": 1
+  },
+  {
+    "id": "groq-openai/gpt-oss-120b",
+    "label": "Groq (openai/gpt-oss-120b)",
+    "provider": "openai_compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY",
+    "model": "${GROQ_MODEL}",
+    "supports_json_schema": true,
+    "rpm": 30,
+    "rpd": 1000,
+    "price_in_per_1m": 0.05,
+    "price_out_per_1m": 0.08,
+    "tier": "stable",
+    "priority": 2
   }
 ]

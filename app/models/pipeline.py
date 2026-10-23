@@ -587,6 +587,8 @@ class LearnRequest(BaseModel):
 
         reg = get_model_registry()
         if not reg.has_model(v):
+            reg = get_model_registry(reload=True)
+        if not reg.has_model(v):
             raise ValueError(
                 f"Unknown model_id '{v}'. Available models: {reg.get_model_ids()}"
             )

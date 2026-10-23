@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # ── Multi-Provider AI Layer (Groq, Cerebras, Ollama) ──────────
     groq_api_key: str | None = Field(default=None)
     groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
-    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_model: str = Field(default="openai/gpt-oss-120b")
     groq_timeout_seconds: float = Field(default=30.0, ge=1.0)
 
     cerebras_api_key: str | None = Field(default=None)
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
             "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
             "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
             "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
-            "llama-3.3-70b-versatile": {"input": 0.05, "output": 0.08},
+            "openai/gpt-oss-120b": {"input": 0.15, "output": 0.60},
             "llama3.1-8b": {"input": 0.10, "output": 0.10},
             "llama3.2": {"input": 0.0, "output": 0.0},
         }

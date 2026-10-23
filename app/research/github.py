@@ -11,6 +11,7 @@ import base64
 from datetime import UTC, datetime
 import hashlib
 import os
+import re
 
 import httpx
 
@@ -19,6 +20,66 @@ from app.research.models import ResearchDocument, ResearchError
 from app.research.scoring import hash_content, normalize, normalize_whitespace
 
 MAX_README_CHARS = 20000
+GITHUB_QUERY_MAX_CHARS = 256
+
+
+def build_github_query(
+    topic: str,
+    lang: str | None = None,
+    stars_min: int = 0,
+    max_chars: int = 200,
+) -> str:
+    """
+    Build a short, focused GitHub search query from a topic.
+    GitHub search strictly enforces a 256-character limit for 'q'.
+    Avoids concatenating entire goals, tech stacks, or milestone descriptions.
+    """
+    if not topic or not topic.strip():
+        base = "examples"
+    else:
+        # Strip milestone / step numbering prefixes
+        clean = re.sub(
+            r"^(?:milestone\s*\d+[:\-]?|\d+[\.\)]|\bstep\s*\d+[:\-]?)\s*",
+            "",
+            topic.strip(),
+            flags=re.IGNORECASE,
+        )
+        # Take the core topic before colons or dashes
+        clean = clean.split(":")[0].split(" - ")[0].strip()
+        # Keep up to first 8 substantive words
+        words = clean.split()
+        if len(words) > 8:
+            clean = " ".join(words[:8])
+        clean = clean.strip()
+        if not clean:
+            base = "examples"
+        elif "examples" not in clean.lower():
+            base = f"{clean} examples"
+        else:
+            base = clean
+
+    qualifiers: list[str] = []
+    if lang and lang.strip():
+        clean_lang = lang.strip().lower()
+        qualifiers.append(f"language:{clean_lang}")
+    if stars_min > 0:
+        qualifiers.append(f"stars:>{stars_min}")
+
+    qual_str = " ".join(qualifiers)
+    allowed_base_len = max(20, max_chars - len(qual_str) - 2)
+    if len(base) > allowed_base_len:
+        base = base[:allowed_base_len].rsplit(" ", 1)[0].strip()
+
+    if qual_str:
+        full_query = f"{base} {qual_str}".strip()
+    else:
+        full_query = base
+
+    # Hard cap at GITHUB_QUERY_MAX_CHARS (256)
+    if len(full_query) > GITHUB_QUERY_MAX_CHARS:
+        full_query = full_query[:GITHUB_QUERY_MAX_CHARS].rsplit(" ", 1)[0].strip()
+
+    return full_query
 
 
 class GitHubConnector:
@@ -73,14 +134,20 @@ class GitHubConnector:
         Skips repositories that do not have a README.
         Raises ResearchError on rate limit (403/429) or network errors.
         """
+        # Strictly enforce GitHub's 256-character query limit
+        clean_query = query.strip()
+        if len(clean_query) > GITHUB_QUERY_MAX_CHARS:
+            clean_query = clean_query[:GITHUB_QUERY_MAX_CHARS].rsplit(" ", 1)[0].strip()
+
         headers = self._get_headers()
         search_url = "https://api.github.com/search/repositories"
         params: dict[str, object] = {
-            "q": query,
+            "q": clean_query,
             "sort": "stars",
             "order": "desc",
             "per_page": limit,
         }
+
 
         try:
             if self._client is not None:

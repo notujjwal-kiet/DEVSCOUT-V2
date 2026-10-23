@@ -6,7 +6,7 @@ from app.research.discovery import (
     discover_sources,
     normalize_url,
 )
-from app.research.github import GitHubConnector
+from app.research.github import GitHubConnector, build_github_query
 from app.research.models import DiscoveredSource, ResearchDocument, ResearchError
 from app.research.scoring import (
     content_changed,
@@ -30,6 +30,7 @@ __all__ = [
     "DISCOVERY_CONCURRENCY",
     "DiscoveredSource",
     "GitHubConnector",
+    "build_github_query",
     "ResearchDocument",
     "ResearchError",
     "SSRFError",

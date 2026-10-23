@@ -3,6 +3,8 @@ app/providers/registry.py
 
 Configures multi-provider registry from backend environment variables and Settings.
 No hardcoded secrets. Never logs API keys.
+Dynamically tracks configuration changes and provides safe diagnostic reporting
+(distinguishing configuration, initialization, authentication, model access, and quota).
 """
 from __future__ import annotations
 
@@ -10,7 +12,6 @@ import os
 from typing import Any
 import structlog
 
-from app.config import get_settings
 from app.providers.base import BaseChatProvider
 from app.providers.gemini_provider import GeminiChatProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -33,6 +34,15 @@ class ProviderRegistry:
 
     def reload(self) -> None:
         """Initialize or reload providers from current environment and config."""
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            from app.config import get_settings
+            get_settings.cache_clear()
+        except Exception:
+            pass
+
+        from app.config import get_settings
         cfg = get_settings()
         self._providers.clear()
 
@@ -44,7 +54,7 @@ class ProviderRegistry:
         )
         groq_model = (
             getattr(cfg, "groq_model", None)
-            or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            or os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
         )
         groq_timeout = getattr(cfg, "groq_timeout_seconds", 30.0)
 
@@ -123,7 +133,7 @@ class ProviderRegistry:
                 name="ollama",
                 base_url=ollama_base_url,
                 model=ollama_model,
-                api_key=None,  # Local Ollama typically requires no authentication key
+                api_key=None,
                 timeout_seconds=ollama_timeout,
                 tier="local",
                 is_local=True,
@@ -141,8 +151,16 @@ class ProviderRegistry:
         )
 
     def get_provider(self, name: str) -> BaseChatProvider | None:
-        """Lookup provider by lowercase name."""
-        return self._providers.get(name.lower().strip())
+        """Lookup provider by lowercase name, reloading if unconfigured key is now present in env."""
+        key = name.lower().strip()
+        prov = self._providers.get(key)
+        if prov is None or not prov.is_available():
+            # Check if environment was updated with key
+            env_var = f"{key.upper()}_API_KEY"
+            if os.getenv(env_var):
+                self.reload()
+                prov = self._providers.get(key)
+        return prov
 
     def list_providers(self) -> list[BaseChatProvider]:
         """Return all registered providers in priority order."""
@@ -150,7 +168,41 @@ class ProviderRegistry:
 
     def get_all_models_info(self) -> list[dict[str, Any]]:
         """Return public metadata objects for all registered providers (for GET /api/models)."""
+        self.reload()
         return [p.get_info() for p in self._providers.values()]
+
+    async def diagnose_provider(self, name: str) -> dict[str, Any]:
+        """
+        Diagnose provider status without exposing credentials.
+        Returns failure category: 'configuration', 'initialization', 'authentication',
+        'model_access', 'quota', or 'ready'.
+        """
+        self.reload()
+        prov = self.get_provider(name)
+        if not prov:
+            return {
+                "provider": name,
+                "available": False,
+                "category": "initialization",
+                "message": f"Provider '{name}' not found in registry",
+            }
+        if isinstance(prov, OpenAICompatibleProvider):
+            ok, category = await prov.verify_availability()
+            return {
+                "provider": name,
+                "model": prov.model,
+                "available": ok,
+                "category": category,
+                "status": prov.diagnostic_status,
+                "detail": prov.diagnostic_detail,
+            }
+        return {
+            "provider": name,
+            "model": prov.model,
+            "available": prov.is_available(),
+            "category": "ready" if prov.is_available() else "configuration",
+            "message": "Configured and available" if prov.is_available() else "Missing API credentials",
+        }
 
 
 _registry_instance: ProviderRegistry | None = None
